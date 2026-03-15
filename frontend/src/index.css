@@ -1,0 +1,17 @@
+/* Tailwind v4：只引入 theme + utilities，跳過 preflight 避免與 Ant Design 衝突 */
+@import "tailwindcss/theme" layer(theme);
+@import "tailwindcss/utilities" layer(utilities);
+
+body { margin: 0; }
+#root { height: 100vh; }
+
+/* 新增 known_fact 高亮動畫 */
+@keyframes factHighlight {
+  0%   { background-color: #fef9c3; }
+  100% { background-color: transparent; }
+}
+.fact-new {
+  animation: factHighlight 2s ease-out;
+  border-radius: 3px;
+  padding: 0 2px;
+}

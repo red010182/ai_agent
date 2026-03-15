@@ -1,0 +1,33 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip install:*)",
+      "Bash(pip3 install:*)",
+      "Read(//usr/bin/**)",
+      "Read(//home/alston/.local/bin/**)",
+      "Bash(python3.12 -m venv .venv && .venv/bin/pip install python-frontmatter pytest -q 2>&1 | tail -5)",
+      "Bash(sudo apt:*)",
+      "Bash(.venv/bin/pip install:*)",
+      "Bash(.venv/bin/python -m pytest tests/test_sop_loader.py -v 2>&1)",
+      "Bash(.venv/bin/python -m pytest tests/test_llm_client.py -v 2>&1)",
+      "Bash(.venv/bin/python -c \"import qdrant_client; print\\('qdrant ok'\\)\")",
+      "Bash(.venv/bin/python -m pytest tests/test_vector_search.py -v 2>&1)",
+      "Bash(.venv/bin/python -m pytest tests/test_router.py -v 2>&1)",
+      "Bash(.venv/bin/python -m pytest tests/test_param_extractor.py -v 2>&1)",
+      "Bash(.venv/bin/python -m pytest tests/test_sql_executor.py -v 2>&1)",
+      "Bash(.venv/bin/python -m pytest tests/test_session.py -v 2>&1)",
+      "Bash(.venv/bin/python -m pytest tests/ -v 2>&1)",
+      "Bash(.venv/bin/python -m pytest tests/test_session.py -q 2>&1)",
+      "Bash(.venv/bin/python -m py_compile main.py && echo \"syntax OK\" && .venv/bin/python -m pytest tests/ -q 2>&1)",
+      "Bash(.venv/bin/python -c \"\nimport ast, sys\nwith open\\('api/routes.py'\\) as f:\n    src = f.read\\(\\)\nast.parse\\(src\\)\nprint\\('syntax OK'\\)\n\")",
+      "Bash(.venv/bin/python -m pytest tests/ -q 2>&1)",
+      "Bash(npm create:*)",
+      "Bash(which node:*)",
+      "Bash(/snap/bin/npm create:*)",
+      "Bash(cd:*)",
+      "Bash(/snap/bin/npm install:*)",
+      "Bash(/snap/bin/npm run:*)",
+      "Bash(npm run:*)"
+    ]
+  }
+}
