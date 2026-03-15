@@ -34,7 +34,7 @@ def test_entry_case_flag(sop):
 
 
 def test_symptom_parsed(sop):
-    assert "Scanner lost" in sop["cases"]["case_1"]["symptom"]
+    assert "xxx issue" in sop["cases"]["case_1"]["symptom"]
 
 
 def test_question_parsed(sop):

@@ -1,6 +1,6 @@
 # 內部 LLM（開發階段暫用 DeepSeek，上線前改回內部 endpoint）
 LLM_BASE_URL: str = "https://api.deepseek.com/v1"
-LLM_API_KEY: str = "sk-79f5144e898c4db9a815039972ab7be4"
+LLM_API_KEY: str = "MY_KEY"
 LLM_MODEL: str = "deepseek-chat"
 
 # Embedding（開發階段用本地 sentence-transformers，上線前設回內部 endpoint）

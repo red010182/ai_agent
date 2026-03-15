@@ -1,12 +1,12 @@
 ---
 scenario: productivity_lost
 case_id: case_1
-title: Scanner Lost
+title: xxx issue
 keywords:
-  - scanner lost
+  - xxx issue
   - foup exchange
   - productivity
-  - scanner 異常
+  - xxx 異常
 jumps_to:
   - case_2
   - case_3
@@ -15,14 +15,14 @@ jumps_to:
 ## case 1
 
 ### symptom
-Scanner lost，產能下降或停線。
+xxx issue，產能下降或停線。
 
 ### question
 foup exchange 是否有派滿？
 
 ### action
-1. 查看 A 系統 GUI，確認 scanner 狀態欄位是否顯示 offline
-2. 檢查最近 1 小時的 scanner log：
+1. 查看 A 系統 GUI，確認 xxx 狀態欄位是否顯示 offline
+2. 檢查最近 1 小時的 xxx log：
 ```sql
 SELECT event_time, equipment_id, event_code, event_desc
 FROM equipment_event_log
@@ -38,7 +38,7 @@ FROM foup_status
 WHERE equipment_id = '{equipment_id}'
   AND status != 'normal'
 ```
-4. 若以上查詢皆無異常，重新確認 scanner 電源狀態
+4. 若以上查詢皆無異常，重新確認 xxx 電源狀態
 
 ### note
 如果步驟 2 查詢沒有結果，可以考慮 case 2（確認網路連線問題）。
@@ -49,7 +49,7 @@ WHERE equipment_id = '{equipment_id}'
 ## case 2
 
 ### symptom
-Scanner log 查無資料，疑似網路或通訊異常。
+xxx log 查無資料，疑似網路或通訊異常。
 
 ### question
 設備最後一次正常通訊是什麼時候？
@@ -72,14 +72,14 @@ ORDER BY changed_at DESC
 3. 通知 IT 檢查網路設備
 
 ### note
-若通訊記錄正常但 scanner 仍 lost，回到 case 1 重新確認。
+若通訊記錄正常但 xxx 仍 lost，回到 case 1 重新確認。
 
 ---
 
 ## case 3
 
 ### symptom
-Foup 卡在 port 或狀態異常，導致 scanner 無法正常運作。
+Foup 卡在 port 或狀態異常，導致 xxx 無法正常運作。
 
 ### question
 哪個 port 的 foup 出現異常？port 編號為何？

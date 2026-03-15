@@ -51,11 +51,11 @@ def test_update_session_known_facts_raises(mgr, sid):
 # ── append_known_fact ──────────────────────────────────────────────────────────
 
 def test_append_known_fact(mgr, sid):
-    mgr.append_known_fact(sid, "原始症狀：scanner lost")
+    mgr.append_known_fact(sid, "原始症狀：xxx issue")
     mgr.append_known_fact(sid, "case_1 查詢結果：foup_count = 3")
     s = mgr.get_session(sid)
     assert len(s["known_facts"]) == 2
-    assert "scanner lost" in s["known_facts"][0]
+    assert "xxx issue" in s["known_facts"][0]
 
 
 # ── jump_to_case ───────────────────────────────────────────────────────────────
@@ -76,12 +76,12 @@ def test_jump_clears_pending_sql(mgr, sid):
 
 def test_jump_preserves_known_facts(mgr, sid):
     """跨 case 跳轉後 known_facts 必須完整保留。"""
-    mgr.append_known_fact(sid, "原始症狀：scanner lost")
+    mgr.append_known_fact(sid, "原始症狀：xxx issue")
     mgr.append_known_fact(sid, "case_1 查詢結果：foup_count = 3")
     mgr.jump_to_case(sid, "case_2")
     facts = mgr.get_session(sid)["known_facts"]
     assert len(facts) == 2
-    assert "scanner lost" in facts[0]
+    assert "xxx issue" in facts[0]
     assert "foup_count" in facts[1]
 
 

@@ -101,8 +101,8 @@ def test_search_returns_search_results(mock_embed, mock_get_qdrant):
         "sop_file": "productivity_lost.md",
         "case_id": "case_1",
         "scenario": "productivity_lost",
-        "title": "Scanner Lost",
-        "keywords": ["scanner lost"],
+        "title": "xxx issue",
+        "keywords": ["xxx issue"],
     }
     hit.score = 0.92
 
@@ -110,7 +110,7 @@ def test_search_returns_search_results(mock_embed, mock_get_qdrant):
     mock_qdrant.search.return_value = [hit]
     mock_get_qdrant.return_value = mock_qdrant
 
-    results = vs.search_entry_cases("scanner lost", top_k=1)
+    results = vs.search_entry_cases("xxx issue", top_k=1)
 
     assert len(results) == 1
     assert isinstance(results[0], SearchResult)

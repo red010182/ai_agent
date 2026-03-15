@@ -15,8 +15,8 @@ def _result(score: float) -> SearchResult:
         sop_file="productivity_lost.md",
         case_id="case_1",
         scenario="productivity_lost",
-        title="Scanner Lost",
-        keywords=["scanner lost"],
+        title="xxx issue",
+        keywords=["xxx issue"],
         score=score,
     )
 
@@ -70,7 +70,7 @@ def test_score_just_below_threshold_enters_fallback(mock_search):
 def test_high_score_enters_sop(mock_search):
     mock_search.return_value = [_result(score=0.91)]
     session = _session()
-    result = route("scanner lost 產能下降", session)
+    result = route("xxx issue 產能下降", session)
 
     assert result == "sop"
     assert session["mode"] == "sop"
