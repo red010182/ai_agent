@@ -27,7 +27,11 @@
       "Bash(cd:*)",
       "Bash(/snap/bin/npm install:*)",
       "Bash(/snap/bin/npm run:*)",
-      "Bash(npm run:*)"
+      "Bash(npm run:*)",
+      "Bash(git add:*)",
+      "Bash(git push:*)",
+      "Bash(python3:*)",
+      "Bash(docker compose:*)"
     ]
   }
 }
