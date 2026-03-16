@@ -76,9 +76,8 @@ def _embed(texts: list[str]) -> list[list[float]]:
 # ── 公開 API ───────────────────────────────────────────────────────────────────
 
 def index_all_sops(sop_dir: str) -> int:
-    """掃描 sop_dir 下所有 .md，只索引 is_entry: true 的 case。
+    """掃描 sop_dir 下所有 .md，索引每個 case（所有 case 都是潛在入口）。
 
-    禁止將 is_entry: false 的 case 加入 index。
     回傳成功索引的 case 數量。
     """
     sop_path = Path(sop_dir)
@@ -89,16 +88,13 @@ def index_all_sops(sop_dir: str) -> int:
             continue
 
         sop_data = load_sop_file(str(md_file))
-        metadata = sop_data["metadata"]
+        scenario = sop_data["metadata"].get("scenario", "")
 
         for case_id, case in sop_data["cases"].items():
-            if not case["is_entry"]:
-                continue  # 嚴格過濾非入口 case
-
-            keywords: list[str] = metadata.get("keywords", [])
+            keywords: list[str] = case.get("keywords", [])
             # 搜尋文字 = 標題 + symptom + keywords（多語言混合）
             text = " ".join(
-                filter(None, [metadata.get("title", ""), case["symptom"]] + keywords)
+                filter(None, [case.get("title", ""), case["symptom"]] + keywords)
             )
 
             vector = _embed([text])[0]
@@ -109,15 +105,15 @@ def index_all_sops(sop_dir: str) -> int:
                     payload={
                         "sop_file": sop_data["sop_file"],
                         "case_id": case_id,
-                        "scenario": metadata.get("scenario", ""),
-                        "title": metadata.get("title", ""),
+                        "scenario": scenario,
+                        "title": case.get("title", ""),
                         "keywords": keywords,
                     },
                 )
             )
 
     if not points:
-        logger.warning("index_all_sops: no entry cases found in '%s'", sop_dir)
+        logger.warning("index_all_sops: no cases found in '%s'", sop_dir)
         return 0
 
     qdrant = _get_qdrant()

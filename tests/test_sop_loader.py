@@ -18,7 +18,7 @@ def sop():
 # ── load_sop_file ──────────────────────────────────────────────────────────────
 
 def test_load_scenario(sop):
-    assert sop["metadata"]["scenario"] == "productivity_lost"
+    assert sop["metadata"]["scenario"] == "xxx_issue"
 
 
 def test_load_cases_array_in_metadata(sop):
@@ -41,7 +41,7 @@ def test_no_is_entry_field(sop):
 
 
 def test_case_title_from_front_matter(sop):
-    assert sop["cases"]["case_1"]["title"] == "Tool Scanner Lost"
+    assert sop["cases"]["case_1"]["title"] == "XXX Issue 產能下降"
 
 
 def test_case_keywords_from_front_matter(sop):

@@ -32,15 +32,15 @@ def _fake_embed(texts: list[str]) -> list[list[float]]:
 
 @patch("agent.vector_search._get_qdrant")
 @patch("agent.vector_search._embed", side_effect=_fake_embed)
-def test_only_entry_cases_indexed(mock_embed, mock_get_qdrant):
-    """is_entry: false 的 case 不應出現在 upsert 的 points 裡。"""
+def test_all_cases_indexed(mock_embed, mock_get_qdrant):
+    """所有 case 都應進入 index（無 is_entry 過濾）。"""
     mock_qdrant = MagicMock()
     mock_qdrant.get_collections.return_value.collections = []
     mock_get_qdrant.return_value = mock_qdrant
 
     count = vs.index_all_sops("sop")
 
-    assert count >= 1  # 至少有一個入口 case
+    assert count >= 3  # productivity_lost.md 有 case_1/2/3
 
     upsert_calls = mock_qdrant.upsert.call_args_list
     assert len(upsert_calls) == 1
@@ -48,10 +48,9 @@ def test_only_entry_cases_indexed(mock_embed, mock_get_qdrant):
     points = upsert_calls[0].kwargs.get("points") or upsert_calls[0].args[1]
     indexed_case_ids = [p.payload["case_id"] for p in points]
 
-    # productivity_lost.md 的 case_1 是入口，case_2/case_3 不是
     assert "case_1" in indexed_case_ids
-    assert "case_2" not in indexed_case_ids
-    assert "case_3" not in indexed_case_ids
+    assert "case_2" in indexed_case_ids
+    assert "case_3" in indexed_case_ids
 
 
 @patch("agent.vector_search._get_qdrant")

@@ -8,19 +8,19 @@ from agent.param_extractor import extract_missing_params, parse_params_from_user
 # ── extract_missing_params ─────────────────────────────────────────────────────
 
 def test_all_params_missing():
-    sql = "WHERE equipment_id = '{equipment_id}' AND t > '{start_time}'"
+    sql = "WHERE equipment_id = &equipment_id AND t > &start_time"
     assert extract_missing_params(sql, {}) == ["equipment_id", "start_time"]
 
 
 def test_some_params_collected():
-    sql = "WHERE equipment_id = '{equipment_id}' AND t > '{start_time}'"
+    sql = "WHERE equipment_id = &equipment_id AND t > &start_time"
     collected = {"equipment_id": "EQ-001", "start_time": None}
     missing = extract_missing_params(sql, collected)
     assert missing == ["start_time"]
 
 
 def test_all_params_collected():
-    sql = "WHERE equipment_id = '{equipment_id}'"
+    sql = "WHERE equipment_id = &equipment_id"
     collected = {"equipment_id": "EQ-001"}
     assert extract_missing_params(sql, collected) == []
 
@@ -31,7 +31,7 @@ def test_no_placeholders():
 
 def test_empty_string_treated_as_missing():
     """空字串視為未收集。"""
-    sql = "WHERE id = '{equipment_id}'"
+    sql = "WHERE id = &equipment_id"
     assert extract_missing_params(sql, {"equipment_id": ""}) == ["equipment_id"]
 
 
