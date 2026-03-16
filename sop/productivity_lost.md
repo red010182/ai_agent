@@ -1,31 +1,31 @@
 ---
-scenario: productivity_lost
+scenario: xxx_issue
 cases:
   - case_id: case_1
-    title: Tool Scanner Lost
+    title: XXX Issue 產能下降
     keywords:
-      - scanner lost
-      - tool offline
-      - productivity lost
       - xxx issue
+      - 產能下降
+      - container exchanger
+      - equipment offline
     jumps_to: [case_2, case_3]
 
   - case_id: case_2
-    title: Scanner Lost + 網路通訊異常
+    title: XXX Log 查無資料，通訊異常
     keywords:
-      - scanner lost
+      - xxx log
       - 通訊異常
-      - log 查無資料
-      - heartbeat lost
-    jumps_to: [case_1]
+      - 網路異常
+      - heartbeat
+    jumps_to: []
 
   - case_id: case_3
-    title: Foup 卡在 Port 或狀態異常
+    title: Container 卡在 Port 狀態異常
     keywords:
-      - foup stuck
-      - foup error
-      - port abnormal
-      - foup 異常
+      - container 異常
+      - port 異常
+      - container 卡住
+      - error_code
     jumps_to: []
 ---
 
@@ -35,7 +35,7 @@ cases:
 xxx issue，產能下降或停線。
 
 ### problem_to_verify
-foup exchange 是否有派滿？
+container exchanger是否有派滿？
 
 ### how_to_verify
 1. 查看 A 系統 GUI，確認 xxx 狀態欄位是否顯示 offline
@@ -51,18 +51,18 @@ LIMIT 50
 - 若查詢無結果 → 走 case 2（疑似網路或通訊異常）
 - 若查詢有結果，繼續步驟 3
 
-3. 確認是否有 foup 卡在 port：
+3. 確認是否有 container 卡在 port：
 ```sql
-SELECT port_id, foup_id, status, last_updated
-FROM foup_status
+SELECT port_id, container_id, status, last_updated
+FROM container_status
 WHERE equipment_id = &equipment_id
   AND status != 'normal'
 ```
-- 若有異常 foup → 走 case 3
-- 若無異常 → 重新確認 xxx 電源狀態，流程結束
+- 若查詢無結果: 有異常 container → 走 case 3
+- 若查詢有結果: 無異常 → 重新確認 xxx 電源狀態，流程結束
 
 ### note
-步驟 2 與步驟 3 需依序執行，先排除通訊問題再確認 foup 狀態。
+步驟 2 與步驟 3 需依序執行，先排除通訊問題再確認 container 狀態。
 
 ---
 
@@ -90,7 +90,7 @@ WHERE equipment_id = &equipment_id
 ORDER BY changed_at DESC
 ```
 - 若有網路設定異動 → 通知 IT 檢查，流程結束
-- 若無異動但通訊仍異常 → 走 case 1 重新確認
+- 若無異動但通訊仍異常 → 人工處理
 
 3. 通知 IT 檢查網路設備
 
@@ -102,24 +102,24 @@ ORDER BY changed_at DESC
 ## case 3
 
 ### symptom
-Foup 卡在 port 或狀態異常，導致 xxx 無法正常運作。
+container 卡在 port 或狀態異常，導致 xxx 無法正常運作。
 
 ### problem_to_verify
-哪個 port 的 foup 出現異常？port 編號為何？
+哪個 port 的 container 出現異常？port 編號為何？
 
 ### how_to_verify
 1. 查詢該 port 的詳細狀態：
 ```sql
-SELECT port_id, foup_id, lot_id, status, error_code, last_updated
-FROM foup_status
+SELECT port_id, container_id, lot_id, status, error_code, last_updated
+FROM container_status
 WHERE equipment_id = &equipment_id
   AND port_id = &port_id
 ```
-2. 查詢該 foup 的移動歷史：
+2. 查詢該 container 的移動歷史：
 ```sql
 SELECT action_time, action_type, from_location, to_location, operator_id
-FROM foup_movement_log
-WHERE foup_id = &foup_id
+FROM container_movement_log
+WHERE container_id = &container_id
   AND action_time > NOW() - INTERVAL '2 hour'
 ORDER BY action_time DESC
 ```
