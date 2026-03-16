@@ -6,18 +6,28 @@ import frontmatter
 
 
 def load_sop_file(filepath: str) -> dict[str, Any]:
-    """Parse SOP markdown file. Returns metadata + all cases."""
+    """Parse SOP markdown file with new front matter format (cases array).
+
+    Returns:
+        {
+            "metadata": {"scenario": ..., "cases": [{"case_id", "title", "keywords", "jumps_to"}, ...]},
+            "sop_file": "filename.md",
+            "cases": {"case_1": {"case_id", "title", "keywords", "jumps_to",
+                                  "symptom", "problem_to_verify", "how_to_verify", "note", "raw"}, ...}
+        }
+    """
     path = Path(filepath)
     post = frontmatter.load(str(path))
 
     metadata: dict[str, Any] = dict(post.metadata)
-    entry_case_id: str = metadata.get("case_id", "")
+    cases_meta: list[dict[str, Any]] = metadata.get("cases", [])
 
-    # front matter 描述的是入口 case，is_entry 預設為 True
-    if "is_entry" not in metadata:
-        metadata["is_entry"] = True
+    # Build lookup: case_id -> metadata from front matter
+    meta_by_id: dict[str, dict[str, Any]] = {
+        c["case_id"]: c for c in cases_meta
+    }
 
-    cases = _parse_cases(post.content, entry_case_id)
+    cases = _parse_cases(post.content, meta_by_id)
 
     return {
         "metadata": metadata,
@@ -26,8 +36,11 @@ def load_sop_file(filepath: str) -> dict[str, Any]:
     }
 
 
-def _parse_cases(body: str, entry_case_id: str) -> dict[str, dict[str, Any]]:
-    """將 markdown 正文依 '## case N' 標題切割成各個 case。"""
+def _parse_cases(
+    body: str,
+    meta_by_id: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Split markdown body by '## case N' headers and merge with front matter metadata."""
     sections = re.split(r"(?=^## case \d+)", body, flags=re.MULTILINE)
     cases: dict[str, dict[str, Any]] = {}
 
@@ -41,13 +54,16 @@ def _parse_cases(body: str, entry_case_id: str) -> dict[str, dict[str, Any]]:
             continue
 
         case_id = f"case_{header_match.group(1)}"
+        meta = meta_by_id.get(case_id, {})
 
         cases[case_id] = {
             "case_id": case_id,
-            "is_entry": case_id == entry_case_id,
+            "title": meta.get("title", ""),
+            "keywords": meta.get("keywords", []),
+            "jumps_to": meta.get("jumps_to", []),
             "symptom": _extract_subsection(section, "symptom"),
-            "question": _extract_subsection(section, "question"),
-            "action": _extract_subsection(section, "action"),
+            "problem_to_verify": _extract_subsection(section, "problem_to_verify"),
+            "how_to_verify": _extract_subsection(section, "how_to_verify"),
             "note": _extract_subsection(section, "note"),
             "raw": section,
         }
@@ -56,7 +72,7 @@ def _parse_cases(body: str, entry_case_id: str) -> dict[str, dict[str, Any]]:
 
 
 def _extract_subsection(case_text: str, name: str) -> str:
-    """從 case markdown 中取出指定 ### 小節的內容。"""
+    """Extract content of a ### subsection from a case block."""
     pattern = rf"### {name}\s*\n(.*?)(?=\n### |\Z)"
     match = re.search(pattern, case_text, re.DOTALL | re.IGNORECASE)
     if not match:
@@ -65,20 +81,19 @@ def _extract_subsection(case_text: str, name: str) -> str:
 
 
 def get_case(sop_data: dict[str, Any], case_id: str) -> str:
-    """取得特定 case 的完整 markdown 內容。"""
+    """Return the full markdown text of a specific case."""
     case = sop_data["cases"].get(case_id)
     if not case:
         raise KeyError(f"Case '{case_id}' not found in SOP '{sop_data['sop_file']}'")
     return case["raw"]
 
 
-def get_candidate_cases(
+def get_case_symptom_summary(
     sop_data: dict[str, Any], case_ids: list[str]
 ) -> list[dict[str, str]]:
-    """取得多個候選 case 的 case_id + symptom 摘要，供條件比對用。
+    """Return case_id + symptom for the given case IDs, for LLM candidate selection.
 
-    刻意只回傳 symptom，不暴露 action / note 細節，
-    確保 LLM 做的是條件比對而非自由推理。
+    Only exposes symptom to prevent LLM from free-reasoning on how_to_verify content.
     """
     result = []
     for case_id in case_ids:
@@ -91,16 +106,16 @@ def get_candidate_cases(
     return result
 
 
-_PLACEHOLDER_RE = re.compile(r"\{(\w+)\}")
+_PLACEHOLDER_RE = re.compile(r"&(\w+)")
 
 
 def extract_sql_placeholders(sql: str) -> list[str]:
-    """找出 SQL 中所有 {param_name} 佔位符，回傳不重複的清單。"""
+    """Return deduplicated list of &param_name placeholders found in the SQL."""
     return list(dict.fromkeys(_PLACEHOLDER_RE.findall(sql)))
 
 
 def fill_sql_params(sql: str, params: dict[str, str]) -> str:
-    """將 SQL 中的 {param_name} 佔位符填入實際值。"""
+    """Replace &param_name placeholders in SQL with actual values."""
     def replacer(match: re.Match) -> str:
         name = match.group(1)
         if name not in params:

@@ -31,7 +31,12 @@
       "Bash(git add:*)",
       "Bash(git push:*)",
       "Bash(python3:*)",
-      "Bash(docker compose:*)"
+      "Bash(docker compose:*)",
+      "Bash(python:*)",
+      "Bash(source:*)",
+      "Bash(.venv/bin/pytest tests/test_sop_loader.py -v 2>&1)",
+      "Bash(ls:*)",
+      "Bash(PYTHONPATH=. .venv/bin/pytest tests/test_sop_loader.py -v 2>&1)"
     ]
   }
 }

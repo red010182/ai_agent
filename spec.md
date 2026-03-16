@@ -138,8 +138,9 @@ WHERE equipment_id = '{equipment_id}' AND status = 'assigned'
 
 ### SQL 佔位符規範
 
-- 格式統一使用單花括號：`{param_name}`
-- param_name 使用底線分隔英文，例如：`{equipment_id}`、`{lot_id}`
+- 格式採用 `&param_name`（Oracle SQL*Plus 慣例，與工程師現有習慣一致）
+- 例如：`SELECT * FROM table WHERE col = '&my_val'`
+- param_name 使用底線分隔英文，例如：`&equipment_id`、`&lot_id`
 - **Agent 不自行組合 SQL**，只執行 SOP template 填入參數後的結果
 - SQL 結果的解讀方式由 `how_to_verify` 說明，不由 agent 推斷
 
@@ -377,7 +378,7 @@ def route(user_input: str, session: dict) -> Literal["sop", "fallback_chat"]:
 - `get_case_symptom_summary(sop_data, case_ids) -> list[dict]`：
   取得候選 case 的 `case_id` + `symptom`，供 LLM 候選選擇用
 - `extract_sql_placeholders(sql) -> list[str]`
-- `fill_sql_params(sql, params) -> str`
+- `fill_sql_params(sql, params) -> str`：將 `&param` 替換為實際值
 
 ### `agent/vector_search.py`
 
@@ -403,7 +404,7 @@ def route(user_input: str, session: dict) -> Literal["sop", "fallback_chat"]:
 
 ### `agent/param_extractor.py`
 
-- `extract_missing_params(sql, collected) -> list[str]`
+- `extract_missing_params(sql, collected) -> list[str]`：偵測 `&param` 格式的佔位符
 - `parse_params_from_user_input(user_input, missing) -> dict`
 
 ### `agent/session.py`
