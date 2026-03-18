@@ -346,8 +346,8 @@ async def _handle_matching(
     session_id: str, session: dict[str, Any], mgr: SessionManager
 ) -> AsyncGenerator[dict, None]:
     """LLM 條件比對：決定跳轉目標或向用戶補問缺少的條件。"""
-    sop_data, _ = _load_case_data(session)
-    jumps_to: list[str] = sop_data["metadata"].get("jumps_to", [])
+    sop_data, case = _load_case_data(session)
+    jumps_to: list[str] = case.get("jumps_to", [])
 
     if not jumps_to:
         reply = "SOP 流程完成，問題排查結束。如有其他問題請重新描述症狀。"
@@ -366,6 +366,9 @@ async def _handle_matching(
         "根據已知狀態，判斷最符合哪個 case 的 symptom。\n"
         "若已知狀態不足以判斷，回傳 ask_user 詢問用戶。\n"
         "只回傳 JSON，不得輸出其他內容。\n\n"
+        "reply_to_user 必須包含：\n"
+        "1. SQL 查詢結果的解讀方式（數值代表什麼、判斷依據）\n"
+        "2. 根據何條件選擇該 case（或需要用戶補充哪些資訊）\n\n"
         "輸出格式：\n"
         '{"next_action": "jump_to_case", "target_case_id": "case_X", "reply_to_user": "..."}\n'
         "或\n"
@@ -399,6 +402,8 @@ async def _handle_matching(
     if action == "jump_to_case":
         target = result.get("target_case_id", "")
         if target in valid_ids:
+            target_title = sop_data["cases"][target].get("title", target)
+            yield _evt("text_delta", content=f"\n→ 進入 {target}：{target_title}")
             mgr.jump_to_case(session_id, target)
             async for evt in _enter_case(session_id, mgr.get_session(session_id), mgr):
                 yield evt
