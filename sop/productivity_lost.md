@@ -86,7 +86,7 @@ WHERE equipment_id = '&equipment_id'
 SELECT changed_at, changed_by, old_value, new_value, field_name
 FROM system_config_log
 WHERE equipment_id = '&equipment_id'
-  AND changed_at > &start_time
+  AND changed_at > '&start_time'
 ORDER BY changed_at DESC
 ```
 - 若有網路設定異動 → 通知 IT 檢查，流程結束
@@ -113,13 +113,13 @@ container 卡在 port 或狀態異常，導致 xxx 無法正常運作。
 SELECT port_id, container_id, lot_id, status, error_code, last_updated
 FROM container_status
 WHERE equipment_id = '&equipment_id'
-  AND port_id = &port_id
+  AND port_id = ’
 ```
 2. 查詢該 container 的移動歷史：
 ```sql
 SELECT action_time, action_type, from_location, to_location, operator_id
 FROM container_movement_log
-WHERE container_id = &container_id
+WHERE container_id = '&container_id'
   AND action_time > NOW() - INTERVAL '2 hour'
 ORDER BY action_time DESC
 ```
