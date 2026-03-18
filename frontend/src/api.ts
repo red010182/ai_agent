@@ -18,6 +18,7 @@ export type SseEvent =
   | { type: 'text_delta'; content: string }
   | { type: 'sql_confirm'; sql: string; reply: string }
   | { type: 'ask_user'; reply: string }
+  | { type: 'collect_params'; params: string[] }
   | { type: 'trace_routing'; matched_sop: string | null; matched_case: string | null; case_title: string | null; score: number; mode: 'sop' | 'fallback_chat' }
   | { type: 'trace_case'; case_id: string; case_title: string; scenario: string; step: string }
   | { type: 'trace_facts'; known_facts: string[] }

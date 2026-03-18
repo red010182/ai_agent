@@ -43,7 +43,7 @@ container exchanger是否有派滿？
 ```sql
 SELECT event_time, equipment_id, event_code, event_desc
 FROM equipment_event_log
-WHERE equipment_id = &equipment_id
+WHERE equipment_id = '&equipment_id'
   AND event_time > NOW() - INTERVAL '1 hour'
 ORDER BY event_time DESC
 LIMIT 50
@@ -55,7 +55,7 @@ LIMIT 50
 ```sql
 SELECT port_id, container_id, status, last_updated
 FROM container_status
-WHERE equipment_id = &equipment_id
+WHERE equipment_id = '&equipment_id'
   AND status != 'normal'
 ```
 - 若查詢無結果: 有異常 container → 走 case 3
@@ -79,13 +79,13 @@ xxx log 查無資料，疑似網路或通訊異常。
 ```sql
 SELECT equipment_id, last_heartbeat, connection_status, host_ip
 FROM equipment_connection
-WHERE equipment_id = &equipment_id
+WHERE equipment_id = '&equipment_id'
 ```
 2. 確認 host 端的網路設定是否有異動：
 ```sql
 SELECT changed_at, changed_by, old_value, new_value, field_name
 FROM system_config_log
-WHERE equipment_id = &equipment_id
+WHERE equipment_id = '&equipment_id'
   AND changed_at > &start_time
 ORDER BY changed_at DESC
 ```
@@ -112,7 +112,7 @@ container 卡在 port 或狀態異常，導致 xxx 無法正常運作。
 ```sql
 SELECT port_id, container_id, lot_id, status, error_code, last_updated
 FROM container_status
-WHERE equipment_id = &equipment_id
+WHERE equipment_id = '&equipment_id'
   AND port_id = &port_id
 ```
 2. 查詢該 container 的移動歷史：
@@ -127,7 +127,7 @@ ORDER BY action_time DESC
 ```sql
 SELECT error_code, error_desc, recommended_action
 FROM error_code_reference
-WHERE error_code = &error_code
+WHERE error_code = '&error_code'
 ```
 - 有對應 recommended_action → 依建議處理，流程結束
 - 無對應說明 → human_handoff，通知設備工程師現場確認

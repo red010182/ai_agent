@@ -2,13 +2,15 @@ import ReactMarkdown from 'react-markdown'
 import type { ChatMessage } from '../types'
 import { ThinkingPanel } from './ThinkingPanel'
 import { SqlConfirmCard } from './SqlConfirmCard'
+import { ParamFormCard } from './ParamFormCard'
 
 interface Props {
   message: ChatMessage
   onSqlConfirm: (msgId: string, answer: 'yes' | 'no') => void
+  onParamSubmit: (msgId: string, params: Record<string, string>) => void
 }
 
-export function MessageBubble({ message, onSqlConfirm }: Props) {
+export function MessageBubble({ message, onSqlConfirm, onParamSubmit }: Props) {
   // 用戶訊息：右對齊
   if (message.role === 'user') {
     return (
@@ -27,6 +29,18 @@ export function MessageBubble({ message, onSqlConfirm }: Props) {
         <SqlConfirmCard
           message={message}
           onConfirm={answer => onSqlConfirm(message.id, answer)}
+        />
+      </div>
+    )
+  }
+
+  // 參數表單
+  if (message.role === 'collect_params') {
+    return (
+      <div className="flex justify-start">
+        <ParamFormCard
+          message={message}
+          onSubmit={params => onParamSubmit(message.id, params)}
         />
       </div>
     )

@@ -79,6 +79,14 @@ export function ChatArea({ session, addMessage, updateMessage }: Props) {
                 reply: evt.reply,
               })
               break
+            case 'collect_params':
+              addMessage(session.sessionId, {
+                id: crypto.randomUUID(),
+                role: 'collect_params',
+                params: evt.params,
+                handled: false,
+              })
+              break
             case 'trace_routing':
               upd(m => m.role === 'agent'
                 ? { ...m, thinking: { ...m.thinking, routing: evt } }
@@ -136,6 +144,17 @@ export function ChatArea({ session, addMessage, updateMessage }: Props) {
     [session.sessionId, updateMessage, sendMessage],
   )
 
+  // 參數表單送出：標記已處理，以 JSON 字串送出參數
+  const handleParamSubmit = useCallback(
+    (msgId: string, params: Record<string, string>) => {
+      updateMessage(session.sessionId, msgId, m =>
+        m.role === 'collect_params' ? { ...m, handled: true } : m,
+      )
+      sendMessage(JSON.stringify(params))
+    },
+    [session.sessionId, updateMessage, sendMessage],
+  )
+
   return (
     <div className="flex flex-col h-full bg-gray-50">
       {/* 訊息列表 */}
@@ -150,6 +169,7 @@ export function ChatArea({ session, addMessage, updateMessage }: Props) {
             key={msg.id}
             message={msg}
             onSqlConfirm={handleSqlConfirm}
+            onParamSubmit={handleParamSubmit}
           />
         ))}
         <div ref={bottomRef} />

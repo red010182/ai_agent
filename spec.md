@@ -42,6 +42,7 @@ project/
 │   │   │   ├── MessageBubble.tsx
 │   │   │   ├── ThinkingBlock.tsx
 │   │   │   ├── SqlConfirmCard.tsx
+│   │   │   ├── ParamFormCard.tsx    # 缺失參數表單
 │   │   │   └── SqlRecord.tsx
 │   │   ├── hooks/
 │   │   │   ├── useSession.ts
@@ -127,7 +128,7 @@ cases:
 執行以下 SQL：
 ```sql
 SELECT count(*) FROM foup_schedule
-WHERE equipment_id = '{equipment_id}' AND status = 'assigned'
+WHERE equipment_id = &equipment_id AND status = 'assigned'
 ```
 - result > 0 → 走 case 12
 - result = 0 → 走 case 2
@@ -245,19 +246,24 @@ session = {
         "start_time": None,
     },
 
+    # 已知狀態（跨 case 保留，用於 LLM 條件比對）
+    "known_facts": [],
+
     # SQL 暫存
     "pending_sql": None,
     "pending_sql_raw": None,
 
+    # SQL 佇列（一個 case 可能有多個 SQL 需依序執行）
+    "sql_queue": [],
+    "sql_queue_index": 0,
+
     # 狀態機
     "state": "idle",
-    # idle | selecting_case | questioning | collecting_params
-    # | awaiting_sql_confirm | deciding_jump | done
+    # idle | matching_case | questioning | collecting_params
+    # | awaiting_sql_confirm | done
+    # （注意：selecting_case / deciding_jump 已合併進 matching_case）
 }
 ```
-
-**注意：移除了 `known_facts`。** 跳轉條件直接寫在 `how_to_verify` 裡，
-LLM 只需對照 SQL 結果與跳轉條件，不需跨 case 累積狀態。
 
 ### 狀態機流程
 
@@ -267,7 +273,7 @@ LLM 只需對照 SQL 結果與跳轉條件，不需跨 case 累積狀態。
       ↓
   router.route() → sop / fallback_chat
       ↓
-  [selecting_case]
+  [matching_case]
   Vector Search top-3 → LLM 選最符合的 case
       ↓
   [questioning]
@@ -275,15 +281,14 @@ LLM 只需對照 SQL 結果與跳轉條件，不需跨 case 累積狀態。
   problem_to_verify == omit → 跳過
       ↓
   [collecting_params]
-  偵測 how_to_verify 中的 {placeholder}
-  缺少的參數逐一向用戶詢問
+  偵測 how_to_verify 中的 &param 佔位符
+  一次性渲染表單，讓用戶填入所有缺失參數
       ↓
   [awaiting_sql_confirm]
   填入參數，輸出完整 SQL，等待 yes / no
       ↓
-  yes → 執行 SQL
+  yes → 執行 SQL，結果寫入 known_facts
       ↓
-  [deciding_jump]
   LLM 讀 SQL 結果 + how_to_verify 跳轉條件
   → jump_to_case：跳轉，清空 collected_params，回到 [questioning]
   → ask_user：補問缺少的資訊
@@ -357,8 +362,8 @@ LLM 只需對照 SQL 結果與跳轉條件，不需跨 case 累積狀態。
 
 ```python
 def route(user_input: str, session: dict) -> Literal["sop", "fallback_chat"]:
-    """Vector Search + LLM 選 case，只在 state == idle 時呼叫"""
-    results = vector_search.search(user_input, top_k=3)
+    """Vector Search + LLM 選 case，只在 state == idle 時呼叫，完成後進入 matching_case"""
+    results = vector_search.search_entry_cases(user_input, top_k=3)
     if not results or results[0].score < CONFIDENCE_THRESHOLD:
         session["mode"] = "fallback_chat"
         session["fallback_reason"] = "no_results" if not results else "low_confidence"
@@ -382,12 +387,12 @@ def route(user_input: str, session: dict) -> Literal["sop", "fallback_chat"]:
 
 ### `agent/vector_search.py`
 
-- collection：`sop_cases`
+- collection：`sop_entry_cases`
 - **索引所有 case**（無 `is_entry` 過濾）
 - 每個向量的 payload：`{sop_file, case_id, scenario, title, keywords}`
 - Embedding 推薦：`BAAI/bge-m3`（中英混合）
 - `index_all_sops(sop_dir)`
-- `search(query, top_k=3) -> list[SearchResult]`
+- `search_entry_cases(query, top_k=3) -> list[SearchResult]`
 
 ### `agent/llm_client.py`
 
@@ -414,6 +419,9 @@ def route(user_input: str, session: dict) -> Literal["sop", "fallback_chat"]:
 - `get_session(session_id) -> dict`
 - `update_session(session_id, updates)`
 - `reset_session(session_id)`：清空狀態，保留 session_id
+- `append_known_fact(session_id, fact: str)`：追加 SQL 結果摘要到 known_facts
+- `jump_to_case(session_id, new_case_id: str)`：跳轉 case，清空 collected_params / pending_sql / sql_queue
+- `clear_for_sop_entry(session_id)`：新問題進入時清空所有 SOP 相關狀態
 
 ---
 
@@ -437,8 +445,15 @@ data: {"type": "text_delta", "content": "根據 SOP..."}
 // SQL 確認卡片
 data: {"type": "sql_confirm", "sql": "SELECT ...", "reply": "請確認執行以下 SQL？"}
 
-// 補充參數
-data: {"type": "ask_user", "reply": "請提供設備編號："}
+// 表單收集參數（前端渲染 ParamFormCard，一次性輸入所有缺失參數）
+// ⚠️  sse.py 待更新：目前仍使用 ask_user 逐一詢問，需改為發送此事件
+data: {
+  "type": "collect_params",
+  "params": [
+    {"name": "equipment_id", "label": "設備編號"},
+    {"name": "start_time",   "label": "查詢起始時間"}
+  ]
+}
 
 // 串流結束
 data: {"type": "done"}
@@ -474,7 +489,7 @@ data: {
 // SQL 執行完整記錄
 data: {
   "type": "trace_sql",
-  "template": "SELECT count(*) FROM foup_schedule WHERE equipment_id = '{equipment_id}'",
+  "template": "SELECT count(*) FROM foup_schedule WHERE equipment_id = &equipment_id",
   "filled": "SELECT count(*) FROM foup_schedule WHERE equipment_id = 'EQ-4721'",
   "result_rows": 1,
   "result_preview": [{"count": 3}]
@@ -533,6 +548,12 @@ data: {
 │             │  │  ④ 跳轉決策                  │   │
 │             │  └─────────────────────────────┘   │
 │             │                                     │
+│             │  ┌─ 參數輸入表單 ──────────────┐   │
+│             │  │ 設備編號    [____________]   │   │
+│             │  │ 起始時間    [____________]   │   │
+│             │  │           [送出參數]         │   │
+│             │  └─────────────────────────────┘   │
+│             │                                     │
 │             │  ┌─ SQL 確認卡片 ──────────────┐   │
 │             │  │      [確認執行]  [取消]       │   │
 │             │  └─────────────────────────────┘   │
@@ -584,7 +605,7 @@ AUDIT_LOG_FILE = "./logs/audit.log"
 | LLM 選擇候選時無法決定 | 列出候選讓用戶自己選 |
 | SQL 含非 SELECT | 拒絕執行，記錄 audit log |
 | DB 連線失敗 | 回覆「資料庫暫時無法連線」，不 crash |
-| 參數提取失敗 | 逐一詢問每個缺少的參數 |
+| 參數提取失敗 | 渲染表單讓用戶一次填入所有缺失參數 |
 | jumps_to 的 case_id 不存在 | human_handoff，記錄錯誤 |
 
 ---
@@ -631,7 +652,7 @@ pydantic>=2.0.0
 5. `agent/router.py` — Vector Search + LLM 候選選擇
 6. `agent/param_extractor.py`
 7. `agent/sql_executor.py`
-8. `agent/session.py` — 新狀態機（含 selecting_case、deciding_jump）
+8. `agent/session.py` — 含 known_facts / sql_queue 管理，狀態機使用 matching_case
 9. `api/routes.py` + `api/sse.py`
 10. `frontend/` — Vite 腳手架 + 元件實作
 11. `main.py` — 完整端對端測試
@@ -644,7 +665,7 @@ pydantic>=2.0.0
 - [ ] LLM 從候選中選出 symptom 最符合的 case
 - [ ] symptom 重疊時，條件更具體的 case 優先被選中
 - [ ] problem_to_verify != omit 時正確提問；omit 時直接執行
-- [ ] SQL 佔位符正確偵測，缺少參數逐一詢問
+- [ ] SQL 佔位符正確偵測，前端渲染表單一次收集所有缺失參數
 - [ ] 填入參數後輸出完整 SQL，等待 yes / no 確認
 - [ ] 只有 yes 後才執行 SQL，非 SELECT 被拒絕
 - [ ] LLM 依 how_to_verify 跳轉條件 + SQL 結果正確決定下一個 case

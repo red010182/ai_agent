@@ -41,6 +41,21 @@ FALLBACK_SYSTEM_PROMPT = "你是一個友善的助手，使用繁體中文回覆
 _SQL_RE = re.compile(r"```sql\n(.*?)```", re.DOTALL)
 
 
+
+def _try_parse_form_input(user_input: str) -> dict[str, str] | None:
+    """若 user_input 是表單送出的 JSON dict（字串值），直接回傳；否則回傳 None。"""
+    stripped = user_input.strip()
+    if not stripped.startswith("{"):
+        return None
+    try:
+        data = json.loads(stripped)
+        if isinstance(data, dict) and all(isinstance(v, str) for v in data.values()):
+            return data
+    except json.JSONDecodeError:
+        pass
+    return None
+
+
 # ── SessionRegistry ────────────────────────────────────────────────────────────
 
 class SessionRegistry:
@@ -161,13 +176,13 @@ async def _enter_case(
         step="載入 case",
     )
 
-    # 顯示 question（非 omit）
-    q = case["question"].strip()
+    # 顯示 problem_to_verify（非 omit）
+    q = case["problem_to_verify"].strip()
     if q and q.lower() != "omit":
         yield _evt("text_delta", content=q)
 
     # 建立 SQL queue
-    sql_blocks = _extract_sql_blocks(case["action"])
+    sql_blocks = _extract_sql_blocks(case["how_to_verify"])
     mgr.update_session(session_id, {
         "state": "collecting_params",
         "sql_queue": sql_blocks,
@@ -175,8 +190,8 @@ async def _enter_case(
     })
 
     if not sql_blocks:
-        # 無 SQL：顯示 action 文字，直接進入條件比對
-        yield _evt("text_delta", content=f"請依以下步驟操作：\n\n{case['action']}")
+        # 無 SQL：顯示 how_to_verify 文字，直接進入條件比對
+        yield _evt("text_delta", content=f"請依以下步驟操作：\n\n{case['how_to_verify']}")
         mgr.update_session(session_id, {"state": "matching_case"})
         async for evt in _handle_matching(session_id, mgr.get_session(session_id), mgr):
             yield evt
@@ -186,9 +201,7 @@ async def _enter_case(
     missing = _all_unique_placeholders(sql_blocks)
     missing = [p for p in missing if not session["collected_params"].get(p)]
     if missing:
-        reply = f"需要以下資訊才能執行查詢：\n• {missing[0]}"
-        yield _evt("text_delta", content=reply)
-        yield _evt("ask_user", reply=reply)
+        yield _evt("collect_params", params=missing)
     else:
         async for evt in _show_sql(session_id, mgr.get_session(session_id), mgr):
             yield evt
@@ -197,24 +210,27 @@ async def _enter_case(
 async def _handle_collecting_params(
     session_id: str, session: dict[str, Any], user_input: str, mgr: SessionManager
 ) -> AsyncGenerator[dict, None]:
-    """從用戶輸入提取參數，缺少時繼續詢問，齊全時進入 SQL 確認。"""
+    """從用戶輸入提取參數（支援表單 JSON 直接輸入），齊全時進入 SQL 確認。"""
     sql_blocks = session["sql_queue"]
     collected = session["collected_params"]
     all_params = _all_unique_placeholders(sql_blocks)
     missing = [p for p in all_params if not collected.get(p)]
 
     if user_input and missing:
-        extracted = await asyncio.to_thread(
-            parse_params_from_user_input, user_input, missing
-        )
+        # 優先嘗試解析表單送出的 JSON（直接賦值，不過 LLM）
+        form_data = _try_parse_form_input(user_input)
+        if form_data:
+            extracted = {k: v for k, v in form_data.items() if v}
+        else:
+            extracted = await asyncio.to_thread(
+                parse_params_from_user_input, user_input, missing
+            )
         new_collected = {**collected, **{k: v for k, v in extracted.items() if v}}
         mgr.update_session(session_id, {"collected_params": new_collected})
         missing = [p for p in all_params if not new_collected.get(p)]
 
     if missing:
-        reply = f"請提供：{missing[0]}"
-        yield _evt("text_delta", content=reply)
-        yield _evt("ask_user", reply=reply)
+        yield _evt("collect_params", params=missing)
     else:
         async for evt in _show_sql(session_id, mgr.get_session(session_id), mgr):
             yield evt
@@ -426,7 +442,7 @@ async def _handle_fallback(
 
 # ── Main dispatcher ────────────────────────────────────────────────────────────
 
-async def run_agent_turn(
+async def _agent_turn_impl(
     session_id: str, user_input: str
 ) -> AsyncGenerator[dict, None]:
     """對一輪用戶輸入執行 agent 流程，逐一 yield SSE 事件。"""
@@ -527,7 +543,7 @@ async def run_agent_turn(
         elif state == "done":
             mgr.reset_session(session_id)
             yield _evt("text_delta", content="開始新一輪問題排查。")
-            async for evt in run_agent_turn(session_id, user_input):
+            async for evt in _agent_turn_impl(session_id, user_input):
                 yield evt
             return  # 內層已 yield done，跳過外層的 done
 
@@ -538,3 +554,30 @@ async def run_agent_turn(
         traceback.print_exc()
         yield _evt("error", message=str(e))
         yield _evt("done")
+
+
+async def run_agent_turn(
+    session_id: str, user_input: str
+) -> AsyncGenerator[dict, None]:
+    """公開入口：印出對話內容後委派給 _agent_turn_impl。"""
+    sid = session_id[:8]
+    print(f"\n{'='*60}")
+    print(f"[{sid}] USER: {user_input}")
+    print(f"{'='*60}")
+
+    async for evt in _agent_turn_impl(session_id, user_input):
+        data = json.loads(evt["data"])
+        t = data["type"]
+        if t == "text_delta":
+            print(f"  [text_delta] {data.get('content', '')}")
+        elif t == "sql_confirm":
+            print(f"  [sql_confirm] {data.get('sql', '')}")
+        elif t == "ask_user":
+            print(f"  [ask_user]   {data.get('reply', '')}")
+        elif t == "error":
+            print(f"  [error]      {data.get('message', '')}")
+        elif t == "done":
+            print(f"  [done]")
+        else:
+            print(f"  [{t}]")
+        yield evt

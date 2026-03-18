@@ -66,11 +66,19 @@ export interface AskUserMessage {
   reply: string
 }
 
+export interface CollectParamsMessage {
+  id: string
+  role: 'collect_params'
+  params: string[]
+  handled: boolean
+}
+
 export type ChatMessage =
   | UserMessage
   | AgentMessage
   | SqlConfirmMessage
   | AskUserMessage
+  | CollectParamsMessage
 
 // ── Session ───────────────────────────────────────────────────────────────────
 
