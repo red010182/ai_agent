@@ -20,7 +20,7 @@
                     └──────┬──────┘
                            │ /api proxy
                     ┌──────▼──────┐
-                    │   backend   │ :8080
+                    │   backend   │ :9090
                     │  (FastAPI)  │
                     └──────┬──────┘
                            │
@@ -121,7 +121,7 @@ services:
   backend:
     build: .
     ports:
-      - "8080:8080"
+      - "9090:9090"
     env_file: .env
     volumes:
       - ./sop:/app/sop          # SOP 文件（熱更新不需重建 image）

@@ -2,7 +2,7 @@
 """FastAPI app 入口。
 
 啟動：
-    .venv/bin/uvicorn main:app --host 0.0.0.0 --port 8080 --reload
+    .venv/bin/uvicorn main:app --host 0.0.0.0 --port 9090 --reload
     或
     .venv/bin/python main.py
 """
@@ -62,4 +62,4 @@ if _frontend_dir.exists():
 
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8080, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=9090, reload=True)

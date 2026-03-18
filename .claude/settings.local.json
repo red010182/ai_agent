@@ -38,7 +38,8 @@
       "Bash(ls:*)",
       "Bash(PYTHONPATH=. .venv/bin/pytest tests/test_sop_loader.py -v 2>&1)",
       "Bash(PYTHONPATH=. .venv/bin/pytest -v 2>&1)",
-      "Bash(PYTHONPATH=. .venv/bin/pytest tests/test_param_extractor.py::test_all_params_missing tests/test_sop_loader.py::test_load_scenario tests/test_sop_loader.py::test_case_title_from_front_matter -v --tb=short 2>&1)"
+      "Bash(PYTHONPATH=. .venv/bin/pytest tests/test_param_extractor.py::test_all_params_missing tests/test_sop_loader.py::test_load_scenario tests/test_sop_loader.py::test_case_title_from_front_matter -v --tb=short 2>&1)",
+      "Bash(sudo chown:*)"
     ]
   }
 }

@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 WORKDIR /app
 
@@ -19,6 +19,6 @@ COPY config.py main.py ./
 # audit log 目錄
 RUN mkdir -p /app/logs
 
-EXPOSE 8080
+EXPOSE 9090
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "9090"]
