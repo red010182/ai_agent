@@ -69,26 +69,29 @@ export function MessageBubble({ message, onSqlConfirm, onParamSubmit }: Props) {
   }
 
   // Agent 回覆（左對齊 + 思考過程）
+  const showBubble = !!message.text || message.status === 'streaming' || message.status === 'error'
   return (
     <div className="flex flex-col gap-1.5 max-w-[80%]">
-      <div className="bg-white border border-gray-200 rounded-2xl rounded-tl-sm px-4 py-3 shadow-sm text-sm text-gray-800">
-        {message.text ? (
-          <div className="prose prose-sm max-w-none">
-            <ReactMarkdown>{message.text}</ReactMarkdown>
-          </div>
-        ) : (
-          message.status === 'streaming' && (
-            <span className="text-gray-400 text-xs">正在思考中...</span>
-          )
-        )}
-        {/* 串流游標 */}
-        {message.status === 'streaming' && message.text && (
-          <span className="inline-block w-0.5 h-4 ml-0.5 bg-gray-500 animate-pulse align-middle" />
-        )}
-        {message.status === 'error' && (
-          <span className="text-red-500 text-xs ml-1">⚠️ 發生錯誤</span>
-        )}
-      </div>
+      {showBubble && (
+        <div className="bg-white border border-gray-200 rounded-2xl rounded-tl-sm px-4 py-3 shadow-sm text-sm text-gray-800">
+          {message.text ? (
+            <div className="prose prose-sm max-w-none">
+              <ReactMarkdown>{message.text}</ReactMarkdown>
+            </div>
+          ) : (
+            message.status === 'streaming' && (
+              <span className="text-gray-400 text-xs">正在思考中...</span>
+            )
+          )}
+          {/* 串流游標 */}
+          {message.status === 'streaming' && message.text && (
+            <span className="inline-block w-0.5 h-4 ml-0.5 bg-gray-500 animate-pulse align-middle" />
+          )}
+          {message.status === 'error' && (
+            <span className="text-red-500 text-xs ml-1">⚠️ 發生錯誤</span>
+          )}
+        </div>
+      )}
       <ThinkingPanel thinking={message.thinking} status={message.status} />
     </div>
   )
