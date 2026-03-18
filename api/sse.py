@@ -343,8 +343,9 @@ async def _handle_sql_confirm(
             "pending_sql": None,
             "pending_sql_raw": None,
             "sql_queue_index": session["sql_queue_index"] + 1,
+            "state": "matching_case",
         })
-        async for evt in _show_sql(session_id, mgr.get_session(session_id), mgr):
+        async for evt in _handle_matching(session_id, mgr.get_session(session_id), mgr):
             yield evt
 
     elif ans == "no":
@@ -365,39 +366,49 @@ async def _handle_sql_confirm(
 async def _handle_matching(
     session_id: str, session: dict[str, Any], mgr: SessionManager
 ) -> AsyncGenerator[dict, None]:
-    """LLM 條件比對：決定跳轉目標或向用戶補問缺少的條件。"""
+    """LLM 條件比對：決定跳轉目標、繼續下一條 SQL，或向用戶補問缺少的條件。"""
     sop_data, case = _load_case_data(session)
     jumps_to: list[str] = case.get("jumps_to", [])
+    sql_queue = session.get("sql_queue", [])
+    sql_queue_index = session.get("sql_queue_index", 0)
+    has_more_sql = sql_queue_index < len(sql_queue)
 
-    if not jumps_to:
+    if not jumps_to and not has_more_sql:
         reply = "SOP 流程完成，問題排查結束。如有其他問題請重新描述症狀。"
         yield _evt("text_delta", content=reply)
         mgr.update_session(session_id, {"state": "done"})
         return
 
-    candidates = get_case_symptom_summary(sop_data, jumps_to)
+    candidates = get_case_symptom_summary(sop_data, jumps_to) if jumps_to else []
     known_facts_text = "\n".join(f"- {f}" for f in session["known_facts"])
     candidates_text = "\n".join(f"{c['case_id']}: {c['symptom']}" for c in candidates)
     how_to_verify = case.get("how_to_verify", "")
+
+    continue_sql_hint = (
+        f"目前尚有 {len(sql_queue) - sql_queue_index} 條 SQL 待執行（continue_sql 可繼續）。\n"
+    ) if has_more_sql else ""
 
     prompt = (
         f"[當前 case 的 how_to_verify]\n{how_to_verify}\n\n"
         f"[SQL 執行結果（已知狀態）]\n{known_facts_text}\n\n"
         f"[候選 case 的 symptom]\n{candidates_text}\n\n"
-        "[任務]\n"
-        "請嚴格對照 how_to_verify 的跳轉條件與 SQL 結果決定下一步。\n"
-        "不得自行推斷或要求用戶補充資訊。\n"
-        "若 SQL 結果符合某個跳轉條件，直接輸出 jump_to_case。\n"
+        "[判斷規則（依序執行，命中即停止）]\n"
+        "1. 先檢查 how_to_verify 中所有跳轉條件：若當前 SQL 結果已滿足任一條件，"
+        "立即輸出 jump_to_case，不得繼續執行後續 SQL。\n"
+        f"2. 若所有跳轉條件均不滿足：{continue_sql_hint}"
+        "   - 有剩餘 SQL 且 how_to_verify 要求繼續後續步驟 → 輸出 continue_sql\n"
+        "   - 無剩餘 SQL 且條件仍不明確 → 輸出 ask_user\n"
         "只回傳 JSON，不得輸出其他內容。\n\n"
         "reply_to_user 必須包含：\n"
         "1. SQL 查詢結果的解讀方式（數值代表什麼、判斷依據）\n"
-        "2. 根據 how_to_verify 哪條規則選擇該 case\n\n"
+        "2. 根據 how_to_verify 哪條規則選擇該動作\n\n"
         "reply_to_user 必須使用 Markdown 格式：\n"
         "- **粗體** 標示關鍵數值或 case 名稱\n"
         "- 條列式 `-` 列出多個判斷依據\n"
         "- `code` 標示 SQL 欄位名或數值\n\n"
         "輸出格式：\n"
-        '{"next_action": "jump_to_case", "target_case_id": "case_X", "reply_to_user": "..."}\n'
+        + ('{"next_action": "continue_sql", "reply_to_user": "..."}\n或\n' if has_more_sql else "")
+        + '{"next_action": "jump_to_case", "target_case_id": "case_X", "reply_to_user": "..."}\n'
         "或\n"
         '{"next_action": "ask_user", "reply_to_user": "..."}\n'
         "或\n"
@@ -426,7 +437,12 @@ async def _handle_matching(
     if reply:
         yield _evt("text_delta", content=reply)
 
-    if action == "jump_to_case":
+    if action == "continue_sql":
+        mgr.update_session(session_id, {"state": "collecting_params"})
+        async for evt in _show_sql(session_id, mgr.get_session(session_id), mgr):
+            yield evt
+
+    elif action == "jump_to_case":
         target = result.get("target_case_id", "")
         if target in valid_ids:
             target_title = sop_data["cases"][target].get("title", target)
