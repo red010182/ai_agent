@@ -84,3 +84,5 @@ share/python-wheels/
 # by Graphite at 
 
 qdrant_data/
+
+logs/
