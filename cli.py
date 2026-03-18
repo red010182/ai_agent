@@ -21,7 +21,7 @@ from agent.session import SessionManager
 from agent.sop_loader import (
     extract_sql_placeholders,
     fill_sql_params,
-    get_candidate_cases,
+    get_case_symptom_summary,
     load_sop_file,
 )
 from agent.sql_executor import DBConnectionError, SQLRejectedError, execute_select
@@ -219,7 +219,7 @@ def _do_matching(session_id: str, session: dict[str, Any]) -> None:
         mgr.update_session(session_id, {"state": "done"})
         return
 
-    candidates = get_candidate_cases(sop_data, jumps_to)
+    candidates = get_case_symptom_summary(sop_data, jumps_to)
     known_facts_text = "\n".join(f"- {f}" for f in session["known_facts"])
     candidates_text = "\n".join(f"{c['case_id']}: {c['symptom']}" for c in candidates)
 
