@@ -82,3 +82,5 @@ share/python-wheels/
 # adding it to .gitignore will not untrack it. You will need to
 # untrack it manually using git rm --cached [filename], as noted
 # by Graphite at 
+
+qdrant_data/

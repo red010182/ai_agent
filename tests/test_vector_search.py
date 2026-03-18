@@ -105,8 +105,10 @@ def test_search_returns_search_results(mock_embed, mock_get_qdrant):
     }
     hit.score = 0.92
 
+    mock_response = MagicMock()
+    mock_response.points = [hit]
     mock_qdrant = MagicMock()
-    mock_qdrant.search.return_value = [hit]
+    mock_qdrant.query_points.return_value = mock_response
     mock_get_qdrant.return_value = mock_qdrant
 
     results = vs.search_entry_cases("xxx issue", top_k=1)
@@ -120,8 +122,10 @@ def test_search_returns_search_results(mock_embed, mock_get_qdrant):
 @patch("agent.vector_search._get_qdrant")
 @patch("agent.vector_search._embed", side_effect=_fake_embed)
 def test_search_empty_returns_empty_list(mock_embed, mock_get_qdrant):
+    mock_response = MagicMock()
+    mock_response.points = []
     mock_qdrant = MagicMock()
-    mock_qdrant.search.return_value = []
+    mock_qdrant.query_points.return_value = mock_response
     mock_get_qdrant.return_value = mock_qdrant
 
     results = vs.search_entry_cases("something unrelated", top_k=1)

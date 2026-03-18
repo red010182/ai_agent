@@ -139,9 +139,9 @@ def search_entry_cases(query: str, top_k: int = 1) -> list[SearchResult]:
     qdrant = _get_qdrant()
     vector = _embed([query])[0]
 
-    hits = qdrant.search(
+    response = qdrant.query_points(
         collection_name=COLLECTION_NAME,
-        query_vector=vector,
+        query=vector,
         limit=top_k,
     )
 
@@ -154,5 +154,5 @@ def search_entry_cases(query: str, top_k: int = 1) -> list[SearchResult]:
             keywords=h.payload.get("keywords", []),
             score=h.score,
         )
-        for h in hits
+        for h in response.points
     ]
