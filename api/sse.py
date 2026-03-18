@@ -21,7 +21,7 @@ from agent.sop_loader import (
     get_case_symptom_summary,
     load_sop_file,
 )
-from agent.sql_executor import DBConnectionError, SQLRejectedError, execute_select
+from agent.sql_executor import DBConnectionError, SQLExecutionError, SQLRejectedError, execute_select
 
 # ── Prompts ────────────────────────────────────────────────────────────────────
 
@@ -300,6 +300,15 @@ async def _handle_sql_confirm(
         except SQLRejectedError as e:
             yield _evt("text_delta", content=f"SQL 被拒絕：{e}")
             yield _evt("error", message=str(e))
+            mgr.update_session(session_id, {"state": "idle"})
+            return
+        except SQLExecutionError as e:
+            yield _evt(
+                "sql_error",
+                error_message=e.error_message,
+                sql=e.sql,
+                hint="請確認 SOP 中的 SQL 語法是否正確，例如欄位名稱、資料表名稱是否有誤。",
+            )
             mgr.update_session(session_id, {"state": "idle"})
             return
 

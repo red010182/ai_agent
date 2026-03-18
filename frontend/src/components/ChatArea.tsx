@@ -112,6 +112,15 @@ export function ChatArea({ session, addMessage, updateMessage }: Props) {
                 ? { ...m, thinking: { ...m.thinking, decisions: [...m.thinking.decisions, evt] } }
                 : m)
               break
+            case 'sql_error':
+              addMessage(session.sessionId, {
+                id: crypto.randomUUID(),
+                role: 'sql_error',
+                error_message: evt.error_message,
+                sql: evt.sql,
+                hint: evt.hint,
+              })
+              break
             case 'done':
               upd(m => m.role === 'agent' ? { ...m, status: 'done' } : m)
               break

@@ -24,6 +24,7 @@ export type SseEvent =
   | { type: 'trace_facts'; known_facts: string[] }
   | { type: 'trace_sql'; template: string; filled: string; result_rows: number; result_preview: Record<string, unknown>[] }
   | { type: 'trace_decision'; candidates: Array<{ case_id: string; symptom: string }>; chosen: string | null; reason: string }
+  | { type: 'sql_error'; error_message: string; sql: string; hint: string }
   | { type: 'done' }
   | { type: 'error'; message: string }
 

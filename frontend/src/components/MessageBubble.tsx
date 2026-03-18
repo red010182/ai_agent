@@ -2,6 +2,7 @@ import ReactMarkdown from 'react-markdown'
 import type { ChatMessage } from '../types'
 import { ThinkingPanel } from './ThinkingPanel'
 import { SqlConfirmCard } from './SqlConfirmCard'
+import { SqlErrorCard } from './SqlErrorCard'
 import { ParamFormCard } from './ParamFormCard'
 
 interface Props {
@@ -30,6 +31,15 @@ export function MessageBubble({ message, onSqlConfirm, onParamSubmit }: Props) {
           message={message}
           onConfirm={answer => onSqlConfirm(message.id, answer)}
         />
+      </div>
+    )
+  }
+
+  // SQL 執行錯誤卡片
+  if (message.role === 'sql_error') {
+    return (
+      <div className="flex justify-start">
+        <SqlErrorCard message={message} />
       </div>
     )
   }

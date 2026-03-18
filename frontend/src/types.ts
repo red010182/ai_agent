@@ -73,12 +73,21 @@ export interface CollectParamsMessage {
   handled: boolean
 }
 
+export interface SqlErrorMessage {
+  id: string
+  role: 'sql_error'
+  error_message: string
+  sql: string
+  hint: string
+}
+
 export type ChatMessage =
   | UserMessage
   | AgentMessage
   | SqlConfirmMessage
   | AskUserMessage
   | CollectParamsMessage
+  | SqlErrorMessage
 
 // ── Session ───────────────────────────────────────────────────────────────────
 

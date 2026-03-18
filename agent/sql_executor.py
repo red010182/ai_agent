@@ -24,6 +24,15 @@ class DBConnectionError(RuntimeError):
     """資料庫連線失敗時拋出。"""
 
 
+class SQLExecutionError(RuntimeError):
+    """SQL 執行期間發生 DB 錯誤（語法錯誤、欄位不存在等）時拋出。"""
+
+    def __init__(self, error_message: str, sql: str) -> None:
+        super().__init__(error_message)
+        self.error_message = error_message
+        self.sql = sql
+
+
 def _append_limit(sql: str) -> str:
     """若 SQL 未包含 LIMIT，自動加上 LIMIT 200。"""
     if _LIMIT_RE.search(sql):
@@ -68,8 +77,9 @@ def execute_select(sql: str) -> list[dict[str, Any]]:
         _write_audit(sql_with_limit, 0, error=str(e))
         raise DBConnectionError("資料庫暫時無法連線，請稍後再試。") from e
     except psycopg2.Error as e:
-        _write_audit(sql_with_limit, 0, error=str(e))
-        raise
+        error_message = str(e).strip()
+        _write_audit(sql_with_limit, 0, error=error_message)
+        raise SQLExecutionError(error_message=error_message, sql=sql_with_limit) from e
     finally:
         if conn:
             conn.close()
