@@ -1,4 +1,7 @@
 import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
+import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import type { ChatMessage } from '../types'
 import { ThinkingPanel } from './ThinkingPanel'
 import { SqlConfirmCard } from './SqlConfirmCard'
@@ -76,7 +79,32 @@ export function MessageBubble({ message, onSqlConfirm, onParamSubmit }: Props) {
         <div className="bg-white border border-gray-200 rounded-2xl rounded-tl-sm px-4 py-3 shadow-sm text-sm text-gray-800">
           {message.text ? (
             <div className="prose prose-sm max-w-none">
-              <ReactMarkdown>{message.text}</ReactMarkdown>
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
+                components={{
+                  pre({ children }) {
+                    // v10: block code is <pre><code>…</code></pre>
+                    // Let code handler take full control; strip the outer <pre>
+                    return <>{children}</>
+                  },
+                  code({ className, children }) {
+                    const match = /language-(\w+)/.exec(className || '')
+                    return match ? (
+                      <SyntaxHighlighter
+                        style={vscDarkPlus}
+                        language={match[1]}
+                        PreTag="div"
+                      >
+                        {String(children).replace(/\n$/, '')}
+                      </SyntaxHighlighter>
+                    ) : (
+                      <code className={className}>{children}</code>
+                    )
+                  },
+                }}
+              >
+                {message.text}
+              </ReactMarkdown>
             </div>
           ) : (
             message.status === 'streaming' && (

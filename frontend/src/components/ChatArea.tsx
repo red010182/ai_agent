@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
-import { Input, Button } from 'antd'
+import { Input, Button, type InputRef } from 'antd'
 import { SendOutlined } from '@ant-design/icons'
 import { streamChat } from '../api'
 import type { ChatMessage, ChatSession, ThinkingData } from '../types'
@@ -23,6 +23,13 @@ export function ChatArea({ session, addMessage, updateMessage }: Props) {
   const [inputText, setInputText] = useState('')
   const [isStreaming, setIsStreaming] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<InputRef>(null)
+
+  // session 切換時 focus input
+  useEffect(() => {
+    inputRef.current?.focus?.()
+
+  }, [session.sessionId])
 
   // 新訊息時自動滾到底
   useEffect(() => {
@@ -187,6 +194,7 @@ export function ChatArea({ session, addMessage, updateMessage }: Props) {
       {/* 輸入列 */}
       <div className="border-t border-gray-200 bg-white px-4 py-3 flex gap-2">
         <Input
+          ref={inputRef}
           value={inputText}
           onChange={e => setInputText(e.target.value)}
           onPressEnter={() => sendMessage(inputText)}
