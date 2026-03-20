@@ -2,7 +2,7 @@ import json
 import logging
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Generator
 
 from openai import OpenAI, OpenAIError
 
@@ -79,3 +79,28 @@ def chat(
         "next_action": "human_handoff",
         "reply_to_user": "系統發生錯誤，無法解析 AI 回應，請通知工程師處理。",
     }
+
+
+def chat_stream(
+    system: str,
+    messages: list[dict[str, str]],
+) -> Generator[str, None, None]:
+    """Stream LLM 回覆，逐 chunk yield 文字（僅用於 fallback 閒聊模式）。
+
+    失敗時 yield 錯誤提示字串後結束，不拋出例外。
+    """
+    client = _get_client()
+    full_messages = [{"role": "system", "content": system}] + messages
+    try:
+        stream = client.chat.completions.create(
+            model=config.LLM_MODEL,
+            messages=full_messages,
+            stream=True,
+        )
+        for chunk in stream:
+            content = chunk.choices[0].delta.content
+            if content:
+                yield content
+    except OpenAIError as e:
+        logger.error("LLM streaming error: %s", e)
+        yield "抱歉，目前無法連線至 AI 服務，請稍後再試。"

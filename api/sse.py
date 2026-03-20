@@ -7,6 +7,7 @@
 import asyncio
 import json
 import re
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncGenerator
@@ -494,20 +495,35 @@ async def _handle_matching(
 async def _handle_fallback(
     session_id: str, session: dict[str, Any], user_input: str, mgr: SessionManager
 ) -> AsyncGenerator[dict, None]:
-    """Fallback 閒聊：LLM 自由對話，不使用 JSON 格式。"""
+    """Fallback 閒聊：LLM streaming 逐 chunk 輸出。"""
     history = session["conversation_history"][-10:]
     messages = history + [{"role": "user", "content": user_input}]
 
-    reply = await asyncio.to_thread(
-        llm_client.chat, FALLBACK_SYSTEM_PROMPT, messages, False
-    )
-    reply = str(reply)
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue[str | None] = asyncio.Queue()
 
-    yield _evt("text_delta", content=reply)
+    def _produce() -> None:
+        try:
+            for chunk in llm_client.chat_stream(FALLBACK_SYSTEM_PROMPT, messages):
+                loop.call_soon_threadsafe(queue.put_nowait, chunk)
+        except Exception as e:
+            loop.call_soon_threadsafe(queue.put_nowait, f"\n\n⚠️ 串流錯誤：{e}")
+        finally:
+            loop.call_soon_threadsafe(queue.put_nowait, None)
+
+    threading.Thread(target=_produce, daemon=True).start()
+
+    full_reply = ""
+    while True:
+        chunk = await queue.get()
+        if chunk is None:
+            break
+        full_reply += chunk
+        yield _evt("text_delta", content=chunk)
 
     # 更新對話歷史（conversation_history 無專屬 SessionManager 方法，直接 append）
     session["conversation_history"].append({"role": "user", "content": user_input})
-    session["conversation_history"].append({"role": "assistant", "content": reply})
+    session["conversation_history"].append({"role": "assistant", "content": full_reply})
 
 
 # ── Main dispatcher ────────────────────────────────────────────────────────────
