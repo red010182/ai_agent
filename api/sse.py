@@ -114,6 +114,20 @@ def _evt(type_: str, **kwargs: Any) -> dict[str, str]:
 
 # ── Internal helpers ───────────────────────────────────────────────────────────
 
+def _rows_to_markdown_table(rows: list[dict], max_rows: int = 10) -> str:
+    """將 DB 結果列表轉成 Markdown table（最多顯示 max_rows 筆）。"""
+    if not rows:
+        return ""
+    headers = list(rows[0].keys())
+    sep = "| " + " | ".join("---" for _ in headers) + " |"
+    header_row = "| " + " | ".join(headers) + " |"
+    data_rows = [
+        "| " + " | ".join(str(row.get(h, "")) for h in headers) + " |"
+        for row in rows[:max_rows]
+    ]
+    return "\n".join([header_row, sep] + data_rows)
+
+
 def _extract_sql_blocks(action: str) -> list[str]:
     return _SQL_RE.findall(action)
 
@@ -209,6 +223,9 @@ async def _enter_case(
     missing = _all_unique_placeholders(sql_blocks)
     missing = [p for p in missing if not session["collected_params"].get(p)]
     if missing:
+        # 顯示第一條 SQL 的 template（含佔位符原文）
+        first_sql_template = sql_blocks[0]
+        yield _evt("text_delta", content=f"\n\n```sql\n{first_sql_template}\n```")
         yield _evt("collect_params", params=missing)
     else:
         async for evt in _show_sql(session_id, mgr.get_session(session_id), mgr):
@@ -313,11 +330,9 @@ async def _handle_sql_confirm(
             return
 
         preview = rows[:10]
-        summary = f"查詢回傳 {len(rows)} 筆"
-        if rows:
-            summary += (
-                f"，前 3 筆：{json.dumps(rows[:3], ensure_ascii=False, default=str)}"
-            )
+        count_text = f"查詢回傳 {len(rows)} 筆"
+        table_md = _rows_to_markdown_table(rows, max_rows=10)
+        display = count_text if not rows else f"{count_text}\n\n{table_md}"
 
         # trace_sql：完整 SQL 執行過程
         yield _evt(
@@ -327,12 +342,13 @@ async def _handle_sql_confirm(
             result_rows=len(rows),
             result_preview=preview,
         )
-        yield _evt("text_delta", content=summary)
+        yield _evt("text_delta", content=display)
 
-        # 寫入 known_facts → trace_facts
+        # 寫入 known_facts → trace_facts（用精簡的 count_text，不含 table）
         mgr.append_known_fact(
             session_id,
-            f"{session['current_case_id']} SQL 查詢結果：{summary}",
+            f"{session['current_case_id']} SQL 查詢結果：{count_text}，"
+            f"前 3 筆：{json.dumps(rows[:3], ensure_ascii=False, default=str)}",
         )
         yield _evt(
             "trace_facts",
@@ -388,6 +404,14 @@ async def _handle_matching(
         f"目前尚有 {len(sql_queue) - sql_queue_index} 條 SQL 待執行（continue_sql 可繼續）。\n"
     ) if has_more_sql else ""
 
+    # "reply_to_user 必須包含：\n"
+    #     "1. SQL 查詢結果的解讀方式（數值代表什麼、判斷依據）\n"
+    #     "2. 根據 how_to_verify 哪條規則選擇該動作\n\n"
+    #     "reply_to_user 必須使用 Markdown 格式：\n"
+    #     "- **粗體** 標示關鍵數值或 case 名稱\n"
+    #     "- 條列式 `-` 列出多個判斷依據\n"
+    #     "- `code` 標示 SQL 欄位名或數值\n\n"
+
     prompt = (
         f"[當前 case 的 how_to_verify]\n{how_to_verify}\n\n"
         f"[SQL 執行結果（已知狀態）]\n{known_facts_text}\n\n"
@@ -399,13 +423,11 @@ async def _handle_matching(
         "   - 有剩餘 SQL 且 how_to_verify 要求繼續後續步驟 → 輸出 continue_sql\n"
         "   - 無剩餘 SQL 且條件仍不明確 → 輸出 ask_user\n"
         "只回傳 JSON，不得輸出其他內容。\n\n"
-        "reply_to_user 必須包含：\n"
-        "1. SQL 查詢結果的解讀方式（數值代表什麼、判斷依據）\n"
-        "2. 根據 how_to_verify 哪條規則選擇該動作\n\n"
-        "reply_to_user 必須使用 Markdown 格式：\n"
-        "- **粗體** 標示關鍵數值或 case 名稱\n"
-        "- 條列式 `-` 列出多個判斷依據\n"
-        "- `code` 標示 SQL 欄位名或數值\n\n"
+        "reply_to_user 規則（必填，不得為空）：\n"
+        "- 第一句：用一句話解讀當前 SQL 結果的意義（數值代表什麼現象）\n"
+        "- jump_to_case：第二句說明即將進入哪個 case，以 **粗體** 標示 case 名稱\n"
+        "- continue_sql：第二句說明結果符合 how_to_verify 哪個繼續條件，因此執行下一步\n"
+        "- 禁止輸出內部推理、引用 how_to_verify 條文原文或 case_id 編號\n\n"
         "輸出格式：\n"
         + ('{"next_action": "continue_sql", "reply_to_user": "..."}\n或\n' if has_more_sql else "")
         + '{"next_action": "jump_to_case", "target_case_id": "case_X", "reply_to_user": "..."}\n'
@@ -434,7 +456,7 @@ async def _handle_matching(
         reason=reply,
     )
 
-    if reply:
+    if reply is not None:
         yield _evt("text_delta", content=reply)
 
     if action == "continue_sql":
