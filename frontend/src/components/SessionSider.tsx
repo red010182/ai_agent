@@ -27,6 +27,16 @@ export function SessionSider({ sessions, currentSessionId, onNew, onSelect, onDe
         ) : (
           sessions.map(session => {
             const active = session.sessionId === currentSessionId
+            const timeLabel = session.createdAt
+              ? (() => {
+                  const d = new Date(session.createdAt)
+                  const mm = String(d.getMonth() + 1).padStart(2, '0')
+                  const dd = String(d.getDate()).padStart(2, '0')
+                  const hh = String(d.getHours()).padStart(2, '0')
+                  const min = String(d.getMinutes()).padStart(2, '0')
+                  return `${mm}/${dd} ${hh}:${min}`
+                })()
+              : null
             return (
               <div
                 key={session.sessionId}
@@ -38,14 +48,19 @@ export function SessionSider({ sessions, currentSessionId, onNew, onSelect, onDe
                 ].join(' ')}
               >
                 <MessageOutlined className="text-gray-400 shrink-0" />
-                <span
-                  className={[
-                    'flex-1 text-sm truncate',
-                    active ? 'text-blue-600 font-medium' : 'text-gray-700',
-                  ].join(' ')}
-                >
-                  {session.name}
-                </span>
+                <div className="flex-1 min-w-0">
+                  <p
+                    className={[
+                      'text-sm truncate m-0 leading-snug',
+                      active ? 'text-blue-600 font-medium' : 'text-gray-700',
+                    ].join(' ')}
+                  >
+                    {session.name}
+                  </p>
+                  {timeLabel && (
+                    <p className="text-xs text-gray-400 m-0 leading-snug">{timeLabel}</p>
+                  )}
+                </div>
                 <Button
                   type="text"
                   size="small"

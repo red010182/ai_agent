@@ -17,6 +17,7 @@ export default function App() {
       const newSession: ChatSession = {
         sessionId: session_id,
         name: `聊天室 ${new Date().toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' })}`,
+        createdAt: new Date().toISOString(),
         messages: [],
       }
       setSessions(prev => [newSession, ...prev])
@@ -42,11 +43,15 @@ export default function App() {
 
   const addMessage = useCallback((sessionId: string, msg: ChatMessage) => {
     setSessions(prev =>
-      prev.map(s =>
-        s.sessionId === sessionId
-          ? { ...s, messages: [...s.messages, msg] }
-          : s,
-      ),
+      prev.map(s => {
+        if (s.sessionId !== sessionId) return s
+        const isFirstUserMsg =
+          msg.role === 'user' && !s.messages.some(m => m.role === 'user')
+        const name = isFirstUserMsg
+          ? (msg.text.length > 20 ? msg.text.slice(0, 20) + '…' : msg.text)
+          : s.name
+        return { ...s, name, messages: [...s.messages, msg] }
+      }),
     )
   }, [])
 

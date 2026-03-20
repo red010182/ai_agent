@@ -41,8 +41,7 @@ def _get_qdrant() -> QdrantClient:
 def _get_embed_fn() -> Callable[[list[str]], list[list[float]]]:
     global _embed_fn
     if _embed_fn is None:
-        if config.EMBEDDING_BASE_URL is None:
-            # 本地 sentence-transformers
+        if config.EMBEDDING_MODE == "local":
             from sentence_transformers import SentenceTransformer
             model = SentenceTransformer(config.EMBEDDING_MODEL)
 
@@ -51,16 +50,16 @@ def _get_embed_fn() -> Callable[[list[str]], list[list[float]]]:
 
             _embed_fn = _local_embed
         else:
-            # 內部 embedding API（OpenAI 相容）
+            # remote：OpenAI 相容 embedding API
             from openai import OpenAI
             client = OpenAI(
                 base_url=config.EMBEDDING_BASE_URL,
-                api_key=config.LLM_API_KEY,
+                api_key=config.EMBEDDING_API_KEY,
             )
 
             def _remote_embed(texts: list[str]) -> list[list[float]]:
                 resp = client.embeddings.create(
-                    model=config.EMBEDDING_MODEL, input=texts
+                    model=config.EMBEDDING_MODEL_REMOTE, input=texts
                 )
                 return [d.embedding for d in resp.data]
 

@@ -595,8 +595,16 @@ LLM_BASE_URL = "http://internal-llm:8000/v1"
 LLM_API_KEY = "dummy"
 LLM_MODEL = "qwen-235b-q8"
 
-EMBEDDING_BASE_URL = "http://internal-embedding:8001/v1"
+# Embedding 模式切換："local" 使用本地模型，"remote" 調用遠端 API
+EMBEDDING_MODE = "local"  # "local" | "remote"
+
+# local 模式（EMBEDDING_MODE=local 時使用，remote 模式不下載模型）
 EMBEDDING_MODEL = "BAAI/bge-m3"
+
+# remote 模式（EMBEDDING_MODE=remote 時使用）
+EMBEDDING_BASE_URL = "http://internal-embedding:8001/v1"
+EMBEDDING_API_KEY = "dummy"
+EMBEDDING_MODEL_REMOTE = "bge-m3"
 
 QDRANT_HOST = "localhost"
 QDRANT_PORT = 6333
@@ -649,7 +657,7 @@ psycopg2-binary>=2.9.0
 fastapi>=0.110.0
 uvicorn>=0.27.0
 sse-starlette>=1.6.0
-sentence-transformers>=2.6.0
+sentence-transformers>=2.6.0  # 僅 EMBEDDING_MODE=local 時需要安裝
 pydantic>=2.0.0
 
 # frontend（在 frontend/ 目錄下）：
