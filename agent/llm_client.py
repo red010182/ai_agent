@@ -81,6 +81,40 @@ def chat(
     }
 
 
+def select_case(
+    user_input: str,
+    candidates: list[dict[str, str]],
+) -> dict[str, Any]:
+    """從候選 case 中選出最符合用戶描述的 case。
+
+    Args:
+        user_input: 用戶原始描述
+        candidates: [{case_id, title, symptom}, ...]
+
+    Returns:
+        confidence=="high": {"chosen_case_id": "case_X", "reason": "...", "confidence": "high"}
+        confidence=="low":  {"chosen_case_id": null, "confidence": "low", "reply_to_user": "..."}
+    """
+    candidates_text = "\n".join(
+        f"{c['case_id']}: {c['symptom']}" for c in candidates
+    )
+    prompt = (
+        f"[用戶描述]\n{user_input}\n\n"
+        f"[候選 case 的 symptom]\n{candidates_text}\n\n"
+        "[任務]\n"
+        "根據用戶描述，選出 symptom 最符合的 case。\n"
+        "confidence: \"high\" 若有明確符合，\"low\" 若候選 symptom 差異不大\n\n"
+        "輸出（high）: {\"chosen_case_id\": \"case_X\", \"reason\": \"...\", \"confidence\": \"high\"}\n"
+        "輸出（low）: {\"chosen_case_id\": null, \"confidence\": \"low\", \"reply_to_user\": \"找到以下幾個可能符合的情況，請選擇最符合的：\"}"
+    )
+    return chat(
+        "你是半導體製程疑難雜症排查助手，負責從候選 case 中選出最符合的一個。"
+        "必須以 JSON 格式回覆。若資訊不足以判斷，優先使用 clarify 反問，不得強行猜測。",
+        [{"role": "user", "content": prompt}],
+        expect_json=True,
+    )
+
+
 def chat_stream(
     system: str,
     messages: list[dict[str, str]],

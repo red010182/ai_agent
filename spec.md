@@ -43,6 +43,7 @@ project/
 │   │   │   ├── ThinkingBlock.tsx
 │   │   │   ├── SqlConfirmCard.tsx
 │   │   │   ├── ParamFormCard.tsx    # 缺失參數表單
+│   │   │   ├── ClarifyCard.tsx      # 反問選項卡片（含自由輸入）
 │   │   │   └── SqlRecord.tsx
 │   │   ├── hooks/
 │   │   │   ├── useSession.ts
@@ -166,7 +167,11 @@ Vector Search（所有 case）→ top-3 候選
     └── 否 → LLM 候選選擇
                ↓
          比對用戶描述 vs 各候選的 symptom
-         選出最符合的 case
+               ↓
+         LLM 信心度足夠？
+         ├── 是 → 直接選出最符合的 case
+         └── 否 → 列出候選讓用戶自行選擇
+                  （candidates 的 symptom 差異不大時觸發）
                ↓
          載入該 case
                ↓
@@ -214,9 +219,13 @@ count: 3
 
 [任務]
 根據 SQL 結果與跳轉條件，決定下一步。
+- 若 SQL 結果明確符合某個跳轉條件 → jump_to_case
+- 若 SQL 結果無法對應任何跳轉條件，或需要更多資訊才能判斷 → clarify 反問用戶
+- 確認超出 SOP 範圍才使用 human_handoff
+
 reply_to_user 需包含兩件事：
 1. 解讀 SQL 結果的意義（用繁體中文說明數值代表什麼）
-2. 說明即將跳轉到哪個 case 以及原因
+2. 說明即將跳轉到哪個 case 以及原因（或反問用戶的問題）
 只回傳 JSON。
 
 輸出：{
@@ -257,18 +266,30 @@ session = {
     # 已知狀態（跨 case 保留，用於 LLM 條件比對）
     "known_facts": [],
 
+    # 已訪問的 case 記錄（防止無限循環）
+    "visited_cases": {},   # {case_id: visit_count}
+    "max_case_visits": 2,  # 同一 case 超過此次數自動 human_handoff
+
+    # clarify 反問的上下文（用戶回答後重新進入哪個決策點）
+    "clarify_context": None,  # None | "matching_case" | "deciding_jump" | "questioning"
+
     # SQL 暫存
     "pending_sql": None,
     "pending_sql_raw": None,
 
-    # SQL 佇列（一個 case 可能有多個 SQL 需依序執行）
-    "sql_queue": [],
-    "sql_queue_index": 0,
+    # SQL 佇列（一個 case 的 how_to_verify 可能含多個 SQL，依序執行）
+    # - _enter_case 時從 how_to_verify 解析所有 SQL 填入 sql_queue
+    # - sql_queue_index 指向當前待執行的 SQL
+    # - 每次用戶確認執行後 index + 1
+    # - jump_to_case 時 index 重置為 0（queue 換成新 case 的 SQL）
+    # - clear_for_sop_entry 時兩者全部清空
+    "sql_queue": [],        # 當前 case 的所有 SQL template 清單
+    "sql_queue_index": 0,   # 目前執行到第幾個 SQL（0-based）
 
     # 狀態機
     "state": "idle",
     # idle | matching_case | questioning | collecting_params
-    # | awaiting_sql_confirm | done
+    # | awaiting_sql_confirm | clarifying | done
     # （注意：selecting_case / deciding_jump 已合併進 matching_case）
 }
 ```
@@ -284,6 +305,16 @@ session = {
   [matching_case]
   Vector Search top-3 → LLM 選最符合的 case
       ↓
+  LLM 信心度足夠？
+  ├── 是 → 直接進入 [questioning]
+  └── 否 → [ambiguous_case]
+            列出候選讓用戶選擇
+            用戶選擇後進入 [questioning]
+      ↓
+  visited_cases[case_id] >= max_case_visits？
+  ├── 是 → human_handoff（防止無限循環）
+  └── 否 → visited_cases[case_id] += 1
+      ↓
   [questioning]
   problem_to_verify != omit → 向用戶提問
   problem_to_verify == omit → 跳過
@@ -298,9 +329,10 @@ session = {
   yes → 執行 SQL，結果寫入 known_facts
       ↓
   LLM 讀 SQL 結果 + how_to_verify 跳轉條件
-  → jump_to_case：跳轉，清空 collected_params，回到 [questioning]
-  → ask_user：補問缺少的資訊
-  → human_handoff：通知人工
+  → jump_to_case：跳轉，**保留** collected_params（避免用戶重複輸入相同參數），回到 [questioning]
+  → clarify：反問用戶，等待回答後帶新資訊重新進入當前決策點
+  → ask_user：收集已知缺少的結構化參數
+  → human_handoff：確認超出 SOP 範圍才使用
   → done：流程結束
 
 [done]
@@ -321,6 +353,8 @@ session = {
 2. 每次只問一個問題
 3. 回覆使用繁體中文
 4. 必須以 JSON 格式回覆，不得輸出其他內容
+5. 任何決策點若資訊不足以確定下一步，優先使用 clarify 反問用戶，
+   不得強行猜測或選擇，也不得過早 human_handoff
 ```
 
 ### Fallback 閒聊模式 System Prompt
@@ -333,7 +367,15 @@ session = {
 
 ```jsonc
 // 1. 候選 case 選擇
-{"chosen_case_id": "case_2", "reason": "用戶提到 foup 未派滿"}
+// 信心度足夠，直接選定
+{"chosen_case_id": "case_2", "reason": "用戶提到 foup 未派滿", "confidence": "high"}
+
+// 信心度不足，列出候選讓用戶選
+{
+  "chosen_case_id": null,
+  "confidence": "low",
+  "reply_to_user": "找到以下幾個可能相關的情況，請問您遇到的比較像哪一個？\n\n1. **case_1**：XXX Issue 產能下降\n2. **case_5**：設備通訊異常\n3. **case_8**：Container 狀態錯誤"
+}
 
 // 2. 向用戶提問
 {"next_action": "ask_user", "reply_to_user": "請問 foup exchanger 目前狀態？"}
@@ -436,8 +478,10 @@ def route(user_input: str, session: dict) -> Literal["sop", "fallback_chat"]:
 - `update_session(session_id, updates)`
 - `reset_session(session_id)`：清空狀態，保留 session_id
 - `append_known_fact(session_id, fact: str)`：追加 SQL 結果摘要到 known_facts
-- `jump_to_case(session_id, new_case_id: str)`：跳轉 case，清空 collected_params / pending_sql / sql_queue
-- `clear_for_sop_entry(session_id)`：新問題進入時清空所有 SOP 相關狀態
+- `jump_to_case(session_id, new_case_id: str)`：跳轉 case，保留 collected_params，只清空 pending_sql / sql_queue
+- `clear_for_sop_entry(session_id)`：新問題進入時清空所有 SOP 相關狀態（含 visited_cases 和 collected_params）
+- `record_case_visit(session_id, case_id) -> bool`：
+  記錄訪問次數，若超過 max_case_visits 回傳 False（觸發 human_handoff）
 
 ---
 
@@ -468,6 +512,17 @@ data: {
   "params": [
     {"name": "equipment_id", "label": "設備編號", "hint": "例如 EQ-4721"},
     {"name": "start_time",   "label": "查詢起始時間", "hint": "例如 2026-03-18 00:00:00"}
+  ]
+}
+
+// clarify 選項卡片
+data: {
+  "type": "clarify",
+  "reply_to_user": "請問您觀察到的現象比較像哪一種？",
+  "options": [
+    "設備完全沒有反應",
+    "設備有動作但產能下降",
+    "設備顯示錯誤代碼"
   ]
 }
 
@@ -532,6 +587,7 @@ data: {
 | LLM 文字回覆逐步生成 | `text_delta` |
 | 需要確認 SQL | `sql_confirm` |
 | 需要補充參數或提問 | `ask_user` |
+| LLM 反問用戶（選項卡片） | `clarify` |
 | 完成 | `done` |
 
 ---
@@ -631,6 +687,8 @@ AUDIT_LOG_FILE = "./logs/audit.log"
 | DB 連線失敗 | 回覆「資料庫暫時無法連線」，不 crash |
 | 參數提取失敗 | 渲染表單讓用戶一次填入所有缺失參數 |
 | jumps_to 的 case_id 不存在 | human_handoff，記錄錯誤 |
+| 同一 case 訪問次數超過 max_case_visits | human_handoff，提示可能存在循環跳轉 |
+| LLM 任何決策點資訊不足 | clarify 反問用戶，不強行猜測或提早 human_handoff |
 
 ---
 
@@ -695,6 +753,13 @@ pydantic>=2.0.0
 - [ ] LLM 依 how_to_verify 跳轉條件 + SQL 結果正確決定下一個 case
 - [ ] jumps_to 只能跳同一份 SOP 內的 case
 - [ ] LLM 回傳非 JSON 時不 crash，改為 human_handoff
+- [ ] LLM 任何決策點資訊不足時使用 clarify 反問，不強行猜測
+- [ ] clarify 顯示為選項卡片，選項按鈕點擊後自動送出
+- [ ] clarify 最後一個選項固定為「其他（自由輸入）」，點擊後展開輸入框
+- [ ] 選擇後按鈕 disable，不可重複選擇
+- [ ] clarify 後用戶回答，系統帶新資訊重新進入同一個決策點
+- [ ] clarify 不會觸發 visited_cases 計數（只有真正進入 case 才計數）
+- [ ] 同一 case 訪問次數超過 max_case_visits 時自動 human_handoff
 - [ ] score 全部低於閾值時進入閒聊模式
 - [ ] 閒聊模式不執行 SQL、不載入 SOP
 - [ ] 多聊天室並行，session 互不干擾

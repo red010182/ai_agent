@@ -81,6 +81,22 @@ export interface SqlErrorMessage {
   hint: string
 }
 
+export interface SelectCaseMessage {
+  id: string
+  role: 'select_case'
+  candidates: Array<{ case_id: string; title: string; symptom: string }>
+  reply: string
+  handled: boolean
+}
+
+export interface ClarifyMessage {
+  id: string
+  role: 'clarify'
+  reply: string
+  options: string[]
+  handled: boolean
+}
+
 export type ChatMessage =
   | UserMessage
   | AgentMessage
@@ -88,6 +104,8 @@ export type ChatMessage =
   | AskUserMessage
   | CollectParamsMessage
   | SqlErrorMessage
+  | SelectCaseMessage
+  | ClarifyMessage
 
 // ── Session ───────────────────────────────────────────────────────────────────
 

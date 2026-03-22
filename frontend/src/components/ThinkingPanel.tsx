@@ -163,13 +163,6 @@ function SqlRecord({ sql, index }: { sql: TraceSql; index: number }) {
         children: (
           <div className="space-y-2 text-xs">
             <div>
-              <p className="text-gray-400 mb-1">原始 template</p>
-              <pre className="bg-gray-100 rounded p-2 font-mono overflow-x-auto whitespace-pre-wrap">
-                {sql.template}
-              </pre>
-            </div>
-            <div>
-              <p className="text-gray-400 mb-1">填入參數後</p>
               <pre className="bg-blue-50 border border-blue-100 rounded p-2 font-mono overflow-x-auto whitespace-pre-wrap">
                 {sql.filled}
               </pre>

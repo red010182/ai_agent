@@ -7,14 +7,18 @@ import { ThinkingPanel } from './ThinkingPanel'
 import { SqlConfirmCard } from './SqlConfirmCard'
 import { SqlErrorCard } from './SqlErrorCard'
 import { ParamFormCard } from './ParamFormCard'
+import { SelectCaseCard } from './SelectCaseCard'
+import { ClarifyCard } from './ClarifyCard'
 
 interface Props {
   message: ChatMessage
   onSqlConfirm: (msgId: string, answer: 'yes' | 'no') => void
   onParamSubmit: (msgId: string, params: Record<string, string>) => void
+  onCaseSelect: (msgId: string, caseId: string) => void
+  onClarify: (msgId: string, option: string) => void
 }
 
-export function MessageBubble({ message, onSqlConfirm, onParamSubmit }: Props) {
+export function MessageBubble({ message, onSqlConfirm, onParamSubmit, onCaseSelect, onClarify }: Props) {
   // 用戶訊息：右對齊
   if (message.role === 'user') {
     return (
@@ -33,6 +37,30 @@ export function MessageBubble({ message, onSqlConfirm, onParamSubmit }: Props) {
         <SqlConfirmCard
           message={message}
           onConfirm={answer => onSqlConfirm(message.id, answer)}
+        />
+      </div>
+    )
+  }
+
+  // Clarify 卡片
+  if (message.role === 'clarify') {
+    return (
+      <div className="flex justify-start">
+        <ClarifyCard
+          message={message}
+          onSelect={option => onClarify(message.id, option)}
+        />
+      </div>
+    )
+  }
+
+  // Case 選擇卡片
+  if (message.role === 'select_case') {
+    return (
+      <div className="flex justify-start">
+        <SelectCaseCard
+          message={message}
+          onSelect={caseId => onCaseSelect(message.id, caseId)}
         />
       </div>
     )

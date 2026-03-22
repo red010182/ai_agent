@@ -34,6 +34,7 @@ SOP_SYSTEM_PROMPT = """\
 2. 每次只問一個問題，不要一次問多個
 3. 回覆使用繁體中文
 4. 必須以 JSON 格式回覆，不得輸出其他內容
+5. 任何決策點若資訊不足，優先使用 clarify 反問，不得強行猜測，也不得過早 human_handoff
 
 輸出格式請見 [current_task] 的說明。"""
 
@@ -156,22 +157,65 @@ def _load_case_data(session: dict[str, Any]) -> tuple[dict, dict]:
 
 async def _do_route(
     session_id: str, user_input: str, mgr: SessionManager
-) -> tuple[str, list]:
-    """向量搜尋路由，回傳 (mode, results)。直接更新 session，不重複搜尋。"""
-    results = await asyncio.to_thread(vector_search.search_entry_cases, user_input, 1)
-    if not results or results[0].score < config.CONFIDENCE_THRESHOLD:
+) -> tuple[str, list, dict]:
+    """向量搜尋路由，回傳 (mode, results, extra)。直接更新 session，不重複搜尋。
+
+    extra 在 mode=="ambiguous_case" 時包含 {"candidates": [...], "reply": "..."}。
+    """
+    results = await asyncio.to_thread(vector_search.search_entry_cases, user_input, 3)
+    above = [r for r in results if r.score >= config.CONFIDENCE_THRESHOLD]
+
+    if not above:
         mgr.update_session(session_id, {
             "mode": "fallback_chat",
             "fallback_reason": "no_results" if not results else "low_confidence",
         })
-        return "fallback_chat", results
+        return "fallback_chat", results, {}
+
+    if len(above) == 1:
+        r = above[0]
+        mgr.update_session(session_id, {
+            "mode": "sop",
+            "fallback_reason": None,
+            "current_sop_file": r.sop_file,
+            "current_case_id": r.case_id,
+        })
+        return "sop", above, {}
+
+    # 多個候選：載入各 case 的 symptom，請 LLM 選擇
+    candidates: list[dict] = []
+    for r in above:
+        sop_data = load_sop_file(str(Path(config.SOP_DIR) / r.sop_file))
+        case = sop_data["cases"][r.case_id]
+        candidates.append({
+            "case_id": r.case_id,
+            "title": r.title,
+            "symptom": case["symptom"],
+            "sop_file": r.sop_file,
+        })
+
+    selection: dict = await asyncio.to_thread(llm_client.select_case, user_input, candidates)
+
+    if selection.get("confidence") == "high":
+        chosen_id = selection.get("chosen_case_id")
+        chosen = next((c for c in candidates if c["case_id"] == chosen_id), candidates[0])
+        mgr.update_session(session_id, {
+            "mode": "sop",
+            "fallback_reason": None,
+            "current_sop_file": chosen["sop_file"],
+            "current_case_id": chosen["case_id"],
+        })
+        return "sop", above, {}
+
+    # confidence == "low"：讓用戶選擇
+    reply = selection.get("reply_to_user", "找到以下幾個可能符合的情況，請選擇最符合的：")
     mgr.update_session(session_id, {
         "mode": "sop",
         "fallback_reason": None,
-        "current_sop_file": results[0].sop_file,
-        "current_case_id": results[0].case_id,
+        "state": "ambiguous_case",
+        "ambiguous_case_candidates": candidates,
     })
-    return "sop", results
+    return "ambiguous_case", above, {"candidates": candidates, "reply": reply}
 
 
 # ── State handlers（async generators）─────────────────────────────────────────
@@ -180,6 +224,15 @@ async def _enter_case(
     session_id: str, session: dict[str, Any], mgr: SessionManager
 ) -> AsyncGenerator[dict, None]:
     """載入當前 case，發送 trace_case，顯示 question，建立 SQL queue。"""
+    case_id = session["current_case_id"]
+
+    # 迴圈偵測：同一 case 進入次數超過上限 → human_handoff
+    if not mgr.record_case_visit(session_id, case_id):
+        msg = f"⚠️ 偵測到重複進入 **{case_id}**，可能發生無限迴圈。請通知工程師協助處理。"
+        yield _evt("text_delta", content=msg)
+        mgr.update_session(session_id, {"state": "done"})
+        return
+
     sop_data, case = _load_case_data(session)
     metadata = sop_data["metadata"]
 
@@ -422,18 +475,20 @@ async def _handle_matching(
         "立即輸出 jump_to_case，不得繼續執行後續 SQL。\n"
         f"2. 若所有跳轉條件均不滿足：{continue_sql_hint}"
         "   - 有剩餘 SQL 且 how_to_verify 要求繼續後續步驟 → 輸出 continue_sql\n"
-        "   - 無剩餘 SQL 且條件仍不明確 → 輸出 ask_user\n"
+        "   - 資訊不足以判斷（缺少關鍵現象或用戶描述不明確）→ 優先輸出 clarify 反問\n"
+        "   - 無剩餘 SQL 且已充分反問後仍無法判斷 → 輸出 human_handoff\n"
         "只回傳 JSON，不得輸出其他內容。\n\n"
         "reply_to_user 規則（必填，不得為空）：\n"
         "- 第一句：用一句話解讀當前 SQL 結果的意義（數值代表什麼現象）\n"
         "- jump_to_case：第二句說明即將進入哪個 case，以 **粗體** 標示 case 名稱\n"
         "- continue_sql：第二句說明結果符合 how_to_verify 哪個繼續條件，因此執行下一步\n"
+        "- clarify：reply_to_user 提出一個明確的反問；options 提供 2~4 個選項，每項不超過 20 字\n"
         "- 禁止輸出內部推理、引用 how_to_verify 條文原文或 case_id 編號\n\n"
         "輸出格式：\n"
         + ('{"next_action": "continue_sql", "reply_to_user": "..."}\n或\n' if has_more_sql else "")
         + '{"next_action": "jump_to_case", "target_case_id": "case_X", "reply_to_user": "..."}\n'
         "或\n"
-        '{"next_action": "ask_user", "reply_to_user": "..."}\n'
+        '{"next_action": "clarify", "reply_to_user": "...", "options": ["選項1", "選項2", "選項3"]}\n'
         "或\n"
         '{"next_action": "human_handoff", "reply_to_user": "..."}'
     )
@@ -457,8 +512,8 @@ async def _handle_matching(
         reason=reply,
     )
 
-    if reply is not None:
-        yield _evt("text_delta", content=reply)
+    if reply is not None and action != "clarify":
+        yield _evt("text_delta", content="\n\n" + reply)
 
     if action == "continue_sql":
         mgr.update_session(session_id, {"state": "collecting_params"})
@@ -478,10 +533,12 @@ async def _handle_matching(
             yield _evt("text_delta", content=msg)
             mgr.update_session(session_id, {"state": "done"})
 
-    elif action == "ask_user":
-        mgr.update_session(session_id, {"state": "matching_case"})
-        if reply:
-            yield _evt("ask_user", reply=reply)
+    elif action == "clarify":
+        mgr.update_session(session_id, {
+            "state": "clarifying",
+            "clarify_context": "matching_case",
+        })
+        yield _evt("clarify", reply=reply, options=result.get("options", []))
 
     elif action == "human_handoff":
         mgr.update_session(session_id, {"state": "done"})
@@ -539,7 +596,7 @@ async def _agent_turn_impl(
     try:
         # ── Fallback 模式：每輪重新 route ──────────────────────────────────────
         if session["mode"] == "fallback_chat" and state == "idle":
-            mode, results = await _do_route(session_id, user_input, mgr)
+            mode, results, extra = await _do_route(session_id, user_input, mgr)
 
             if mode == "sop":
                 mgr.clear_for_sop_entry(session_id)
@@ -559,6 +616,19 @@ async def _agent_turn_impl(
                 yield _evt("trace_facts", known_facts=mgr.get_session(session_id)["known_facts"])
                 async for evt in _enter_case(session_id, mgr.get_session(session_id), mgr):
                     yield evt
+            elif mode == "ambiguous_case":
+                yield _evt(
+                    "trace_routing",
+                    matched_sop=None, matched_case=None,
+                    case_title=None, score=round(results[0].score, 4), mode="sop",
+                )
+                mgr.append_known_fact(session_id, f"原始症狀：{user_input}")
+                yield _evt("trace_facts", known_facts=mgr.get_session(session_id)["known_facts"])
+                yield _evt(
+                    "select_case",
+                    candidates=extra["candidates"],
+                    reply=extra["reply"],
+                )
             else:
                 score = round(results[0].score, 4) if results else 0.0
                 yield _evt(
@@ -571,7 +641,7 @@ async def _agent_turn_impl(
 
         # ── Idle：首次輸入症狀 ──────────────────────────────────────────────────
         elif state == "idle":
-            mode, results = await _do_route(session_id, user_input, mgr)
+            mode, results, extra = await _do_route(session_id, user_input, mgr)
 
             if mode == "sop":
                 r = results[0]
@@ -588,6 +658,19 @@ async def _agent_turn_impl(
                 yield _evt("trace_facts", known_facts=mgr.get_session(session_id)["known_facts"])
                 async for evt in _enter_case(session_id, mgr.get_session(session_id), mgr):
                     yield evt
+            elif mode == "ambiguous_case":
+                yield _evt(
+                    "trace_routing",
+                    matched_sop=None, matched_case=None,
+                    case_title=None, score=round(results[0].score, 4), mode="sop",
+                )
+                mgr.append_known_fact(session_id, f"原始症狀：{user_input}")
+                yield _evt("trace_facts", known_facts=mgr.get_session(session_id)["known_facts"])
+                yield _evt(
+                    "select_case",
+                    candidates=extra["candidates"],
+                    reply=extra["reply"],
+                )
             else:
                 score = round(results[0].score, 4) if results else 0.0
                 yield _evt(
@@ -598,6 +681,46 @@ async def _agent_turn_impl(
                 yield _evt("text_delta", content="目前找不到對應的 SOP，我會盡力協助您。")
                 async for evt in _handle_fallback(session_id, session, user_input, mgr):
                     yield evt
+
+        # ── 用戶選擇 case（ambiguous_case 狀態）──────────────────────────────────
+        elif state == "ambiguous_case":
+            candidates = session.get("ambiguous_case_candidates", [])
+            chosen = next((c for c in candidates if c["case_id"] == user_input.strip()), None)
+            if chosen:
+                mgr.update_session(session_id, {
+                    "state": "idle",
+                    "ambiguous_case_candidates": [],
+                    "current_sop_file": chosen["sop_file"],
+                    "current_case_id": chosen["case_id"],
+                })
+                mgr.append_known_fact(session_id, f"用戶選擇 case：{chosen['case_id']}")
+                yield _evt("trace_facts", known_facts=mgr.get_session(session_id)["known_facts"])
+                async for evt in _enter_case(session_id, mgr.get_session(session_id), mgr):
+                    yield evt
+            else:
+                # 無效選擇：重新發送候選清單
+                yield _evt(
+                    "select_case",
+                    candidates=candidates,
+                    reply="請選擇其中一個選項：",
+                )
+
+        # ── Clarify：用戶回答反問後，帶新資訊重新進入原決策點 ──────────────────
+        elif state == "clarifying":
+            context = session.get("clarify_context")
+            mgr.append_known_fact(session_id, f"用戶補充：{user_input}")
+            yield _evt("trace_facts", known_facts=mgr.get_session(session_id)["known_facts"])
+            mgr.update_session(session_id, {"clarify_context": None})
+            if context == "matching_case":
+                mgr.update_session(session_id, {"state": "matching_case"})
+                async for evt in _handle_matching(session_id, mgr.get_session(session_id), mgr):
+                    yield evt
+            else:
+                # 未知 context，回到 idle 重新路由
+                mgr.update_session(session_id, {"state": "idle"})
+                async for evt in _agent_turn_impl(session_id, user_input):
+                    yield evt
+                return
 
         # ── 參數收集 ────────────────────────────────────────────────────────────
         elif state == "collecting_params":
@@ -651,19 +774,28 @@ async def run_agent_turn(
     print(f"[{sid}] USER: {user_input}")
     print(f"{'='*60}")
 
+    text_buf = ""
     async for evt in _agent_turn_impl(session_id, user_input):
         data = json.loads(evt["data"])
         t = data["type"]
         if t == "text_delta":
-            print(f"  [text_delta] {data.get('content', '')}")
-        elif t == "sql_confirm":
-            print(f"  [sql_confirm] {data.get('sql', '')}")
-        elif t == "ask_user":
-            print(f"  [ask_user]   {data.get('reply', '')}")
-        elif t == "error":
-            print(f"  [error]      {data.get('message', '')}")
-        elif t == "done":
-            print(f"  [done]")
+            text_buf += data.get("content", "")
         else:
-            print(f"  [{t}]")
+            if text_buf:
+                print(f"  [text_delta] {text_buf}")
+                text_buf = ""
+            if t == "sql_confirm":
+                print(f"  [sql_confirm] {data.get('sql', '')}")
+            elif t == "ask_user":
+                print(f"  [ask_user]   {data.get('reply', '')}")
+            elif t == "error":
+                print(f"  [error]      {data.get('message', '')}")
+            elif t == "done":
+                print(f"  [done]")
+            elif t == "collect_params":
+                print(f"  [collect_params] {data.get('params', [])}")
+            elif t == "trace_routing":
+                print(f"  [trace_routing] mode={data.get('mode')} score={data.get('score')}")
+            else:
+                print(f"  [{t}]")
         yield evt

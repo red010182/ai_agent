@@ -128,6 +128,24 @@ export function ChatArea({ session, addMessage, updateMessage }: Props) {
                 hint: evt.hint,
               })
               break
+            case 'select_case':
+              addMessage(session.sessionId, {
+                id: crypto.randomUUID(),
+                role: 'select_case',
+                candidates: evt.candidates,
+                reply: evt.reply,
+                handled: false,
+              })
+              break
+            case 'clarify':
+              addMessage(session.sessionId, {
+                id: crypto.randomUUID(),
+                role: 'clarify',
+                reply: evt.reply,
+                options: evt.options,
+                handled: false,
+              })
+              break
             case 'done':
               upd(m => m.role === 'agent' ? { ...m, status: 'done' } : m)
               break
@@ -171,6 +189,28 @@ export function ChatArea({ session, addMessage, updateMessage }: Props) {
     [session.sessionId, updateMessage, sendMessage],
   )
 
+  // Case 選擇：標記已處理，發送 case_id
+  const handleCaseSelect = useCallback(
+    (msgId: string, caseId: string) => {
+      updateMessage(session.sessionId, msgId, m =>
+        m.role === 'select_case' ? { ...m, handled: true } : m,
+      )
+      sendMessage(caseId)
+    },
+    [session.sessionId, updateMessage, sendMessage],
+  )
+
+  // Clarify 選項：標記已處理，發送選項文字
+  const handleClarify = useCallback(
+    (msgId: string, option: string) => {
+      updateMessage(session.sessionId, msgId, m =>
+        m.role === 'clarify' ? { ...m, handled: true } : m,
+      )
+      sendMessage(option)
+    },
+    [session.sessionId, updateMessage, sendMessage],
+  )
+
   return (
     <div className="flex flex-col h-full bg-gray-50">
       {/* 訊息列表 */}
@@ -186,6 +226,8 @@ export function ChatArea({ session, addMessage, updateMessage }: Props) {
             message={msg}
             onSqlConfirm={handleSqlConfirm}
             onParamSubmit={handleParamSubmit}
+            onCaseSelect={handleCaseSelect}
+            onClarify={handleClarify}
           />
         ))}
         <div ref={bottomRef} />
