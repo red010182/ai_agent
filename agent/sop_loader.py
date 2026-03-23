@@ -107,6 +107,12 @@ def get_case_symptom_summary(
 
 
 _PLACEHOLDER_RE = re.compile(r"&(\w+)")
+_SQL_BLOCK_RE = re.compile(r"```sql\n(.*?)```", re.DOTALL)
+
+
+def extract_sql_blocks(how_to_verify: str) -> list[str]:
+    """Extract all ```sql``` blocks from how_to_verify in order."""
+    return [m.strip() for m in _SQL_BLOCK_RE.findall(how_to_verify)]
 
 
 def extract_sql_placeholders(sql: str) -> list[str]:

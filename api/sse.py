@@ -6,7 +6,6 @@
 
 import asyncio
 import json
-import re
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,6 +16,7 @@ from agent import llm_client, vector_search
 from agent.param_extractor import parse_params_from_user_input
 from agent.session import SessionManager
 from agent.sop_loader import (
+    extract_sql_blocks,
     extract_sql_placeholders,
     fill_sql_params,
     get_case_symptom_summary,
@@ -39,9 +39,6 @@ SOP_SYSTEM_PROMPT = """\
 輸出格式請見 [current_task] 的說明。"""
 
 FALLBACK_SYSTEM_PROMPT = "你是一個友善的助手，使用繁體中文回覆。"
-
-_SQL_RE = re.compile(r"```sql\n(.*?)```", re.DOTALL)
-
 
 
 def _try_parse_form_input(user_input: str) -> dict[str, str] | None:
@@ -130,21 +127,6 @@ def _rows_to_markdown_table(rows: list[dict], max_rows: int = 10) -> str:
     return "\n".join([header_row, sep] + data_rows)
 
 
-def _extract_sql_blocks(action: str) -> list[str]:
-    return _SQL_RE.findall(action)
-
-
-def _all_unique_placeholders(sqls: list[str]) -> list[str]:
-    seen: set[str] = set()
-    result: list[str] = []
-    for sql in sqls:
-        for p in extract_sql_placeholders(sql):
-            if p not in seen:
-                seen.add(p)
-                result.append(p)
-    return result
-
-
 def _load_case_data(session: dict[str, Any]) -> tuple[dict, dict]:
     sop_data = load_sop_file(
         str(Path(config.SOP_DIR) / session["current_sop_file"])
@@ -223,7 +205,7 @@ async def _do_route(
 async def _enter_case(
     session_id: str, session: dict[str, Any], mgr: SessionManager
 ) -> AsyncGenerator[dict, None]:
-    """載入當前 case，發送 trace_case，顯示 question，建立 SQL queue。"""
+    """載入當前 case，發送 trace_case，顯示開場介紹，交由 LLM 決定第一步。"""
     case_id = session["current_case_id"]
 
     # 迴圈偵測：同一 case 進入次數超過上限 → human_handoff
@@ -238,61 +220,40 @@ async def _enter_case(
 
     yield _evt(
         "trace_case",
-        case_id=session["current_case_id"],
+        case_id=case_id,
         case_title=metadata.get("title", ""),
         scenario=metadata.get("scenario", ""),
         step="載入 case",
     )
 
-    # 建立 SQL queue
-    sql_blocks = _extract_sql_blocks(case["how_to_verify"])
-    mgr.update_session(session_id, {
-        "state": "collecting_params",
-        "sql_queue": sql_blocks,
-        "sql_queue_index": 0,
-    })
-
-    if not sql_blocks:
-        # 無 SQL：顯示 how_to_verify 文字，直接進入條件比對
-        yield _evt("text_delta", content=f"請依以下步驟操作：\n\n{case['how_to_verify']}")
-        mgr.update_session(session_id, {"state": "matching_case"})
-        async for evt in _handle_matching(session_id, mgr.get_session(session_id), mgr):
-            yield evt
-        return
+    # 提取 how_to_verify 中所有 SQL block，存入 session
+    sql_blocks = extract_sql_blocks(case.get("how_to_verify", ""))
+    mgr.update_session(session_id, {"sql_blocks": sql_blocks, "current_sql_index": None})
 
     # 開場說明：case 名稱 + problem_to_verify
-    case_id = session["current_case_id"]
     title = case.get("title", case_id)
-    problem = case["problem_to_verify"].strip()
+    problem = case.get("problem_to_verify", "").strip()
     if problem and problem.lower() != "omit":
         intro = (
             f"這看起來是 **{case_id}：{title}**。\n\n"
-            f"為了驗證【{problem}】，需要執行以下查詢："
+            f"為了驗證【{problem}】，開始執行排查流程。"
         )
     else:
-        intro = f"這看起來是 **{case_id}：{title}**。\n\n需要執行以下查詢："
+        intro = f"這看起來是 **{case_id}：{title}**。\n\n開始執行排查流程。"
     yield _evt("text_delta", content=intro)
 
-    # 立即檢查是否有缺少的參數
-    missing = _all_unique_placeholders(sql_blocks)
-    missing = [p for p in missing if not session["collected_params"].get(p)]
-    if missing:
-        # 顯示第一條 SQL 的 template（含佔位符原文）
-        first_sql_template = sql_blocks[0]
-        yield _evt("text_delta", content=f"\n\n```sql\n{first_sql_template}\n```")
-        yield _evt("collect_params", params=missing)
-    else:
-        async for evt in _show_sql(session_id, mgr.get_session(session_id), mgr):
-            yield evt
+    mgr.update_session(session_id, {"state": "matching_case"})
+    async for evt in _handle_matching(session_id, mgr.get_session(session_id), mgr):
+        yield evt
 
 
 async def _handle_collecting_params(
     session_id: str, session: dict[str, Any], user_input: str, mgr: SessionManager
 ) -> AsyncGenerator[dict, None]:
     """從用戶輸入提取參數（支援表單 JSON 直接輸入），齊全時進入 SQL 確認。"""
-    sql_blocks = session["sql_queue"]
+    sql_raw = session.get("pending_sql_raw") or ""
     collected = session["collected_params"]
-    all_params = _all_unique_placeholders(sql_blocks)
+    all_params = extract_sql_placeholders(sql_raw)
     missing = [p for p in all_params if not collected.get(p)]
 
     if user_input and missing:
@@ -318,17 +279,8 @@ async def _handle_collecting_params(
 async def _show_sql(
     session_id: str, session: dict[str, Any], mgr: SessionManager
 ) -> AsyncGenerator[dict, None]:
-    """填入下一條 SQL 並以 sql_confirm 事件等待用戶確認。"""
-    sql_blocks = session["sql_queue"]
-    idx = session["sql_queue_index"]
-
-    if idx >= len(sql_blocks):
-        mgr.update_session(session_id, {"state": "matching_case"})
-        async for evt in _handle_matching(session_id, mgr.get_session(session_id), mgr):
-            yield evt
-        return
-
-    sql_raw = sql_blocks[idx]
+    """將 pending_sql_raw 填入參數，以 sql_confirm 事件等待用戶確認。"""
+    sql_raw = session.get("pending_sql_raw") or ""
     try:
         sql_filled = fill_sql_params(sql_raw, session["collected_params"])
     except KeyError as e:
@@ -341,14 +293,8 @@ async def _show_sql(
     mgr.update_session(session_id, {
         "state": "awaiting_sql_confirm",
         "pending_sql": sql_filled,
-        "pending_sql_raw": sql_raw,
     })
-    if idx == 0:
-        yield _evt("sql_confirm", sql=sql_filled, reply="")
-    else:
-        reply = "繼續執行以下查詢，請確認："
-        yield _evt("text_delta", content=reply)
-        yield _evt("sql_confirm", sql=sql_filled, reply=reply)
+    yield _evt("sql_confirm", sql=sql_filled, reply="")
 
 
 async def _handle_sql_confirm(
@@ -409,10 +355,14 @@ async def _handle_sql_confirm(
             known_facts=mgr.get_session(session_id)["known_facts"],
         )
 
+        # 記錄已執行的 sql_index，防止 LLM 重複執行同一條 SQL
+        executed = list(session.get("executed_sql_indexes", []))
+        if session.get("current_sql_index") is not None:
+            executed.append(session["current_sql_index"])
         mgr.update_session(session_id, {
             "pending_sql": None,
             "pending_sql_raw": None,
-            "sql_queue_index": session["sql_queue_index"] + 1,
+            "executed_sql_indexes": executed,
             "state": "matching_case",
         })
         async for evt in _handle_matching(session_id, mgr.get_session(session_id), mgr):
@@ -436,59 +386,49 @@ async def _handle_sql_confirm(
 async def _handle_matching(
     session_id: str, session: dict[str, Any], mgr: SessionManager
 ) -> AsyncGenerator[dict, None]:
-    """LLM 條件比對：決定跳轉目標、繼續下一條 SQL，或向用戶補問缺少的條件。"""
+    """LLM 決策點：決定執行哪條 SQL、跳轉目標，或反問用戶。"""
     sop_data, case = _load_case_data(session)
     jumps_to: list[str] = case.get("jumps_to", [])
-    sql_queue = session.get("sql_queue", [])
-    sql_queue_index = session.get("sql_queue_index", 0)
-    has_more_sql = sql_queue_index < len(sql_queue)
-
-    if not jumps_to and not has_more_sql:
-        reply = "SOP 流程完成，問題排查結束。如有其他問題請重新描述症狀。"
-        yield _evt("text_delta", content=reply)
-        mgr.update_session(session_id, {"state": "done"})
-        return
-
-    candidates = get_case_symptom_summary(sop_data, jumps_to) if jumps_to else []
-    known_facts_text = "\n".join(f"- {f}" for f in session["known_facts"])
-    candidates_text = "\n".join(f"{c['case_id']}: {c['symptom']}" for c in candidates)
     how_to_verify = case.get("how_to_verify", "")
 
-    continue_sql_hint = (
-        f"目前尚有 {len(sql_queue) - sql_queue_index} 條 SQL 待執行（continue_sql 可繼續）。\n"
-    ) if has_more_sql else ""
+    candidates = get_case_symptom_summary(sop_data, jumps_to) if jumps_to else []
+    known_facts_text = "\n".join(f"- {f}" for f in session["known_facts"]) or "（尚無）"
+    candidates_text = "\n".join(f"{c['case_id']}: {c['symptom']}" for c in candidates)
 
-    # "reply_to_user 必須包含：\n"
-    #     "1. SQL 查詢結果的解讀方式（數值代表什麼、判斷依據）\n"
-    #     "2. 根據 how_to_verify 哪條規則選擇該動作\n\n"
-    #     "reply_to_user 必須使用 Markdown 格式：\n"
-    #     "- **粗體** 標示關鍵數值或 case 名稱\n"
-    #     "- 條列式 `-` 列出多個判斷依據\n"
-    #     "- `code` 標示 SQL 欄位名或數值\n\n"
+    sql_blocks = session.get("sql_blocks", [])
+    executed_indexes: set[int] = set(session.get("executed_sql_indexes", []))
+    sql_list_text = "\n".join(
+        f"[{i}] {'[已執行]' if i in executed_indexes else '[未執行]'} {s}"
+        for i, s in enumerate(sql_blocks)
+    )
 
     prompt = (
         f"[當前 case 的 how_to_verify]\n{how_to_verify}\n\n"
-        f"[SQL 執行結果（已知狀態）]\n{known_facts_text}\n\n"
-        f"[候選 case 的 symptom]\n{candidates_text}\n\n"
-        "[判斷規則（依序執行，命中即停止）]\n"
-        "1. 先檢查 how_to_verify 中所有跳轉條件：若當前 SQL 結果已滿足任一條件，"
-        "立即輸出 jump_to_case，不得繼續執行後續 SQL。\n"
-        f"2. 若所有跳轉條件均不滿足：{continue_sql_hint}"
-        "   - 有剩餘 SQL 且 how_to_verify 要求繼續後續步驟 → 輸出 continue_sql\n"
-        "   - 資訊不足以判斷（缺少關鍵現象或用戶描述不明確）→ 優先輸出 clarify 反問\n"
-        "   - 無剩餘 SQL 且已充分反問後仍無法判斷 → 輸出 human_handoff\n"
+        + (f"[可用 SQL 清單（依索引引用）]\n{sql_list_text}\n\n" if sql_blocks else "")
+        + f"[SQL 執行結果（已知狀態）]\n{known_facts_text}\n\n"
+        + (f"[候選 case 的 symptom]\n{candidates_text}\n\n" if candidates else "")
+        + "[判斷規則（依序執行，命中即停止）]\n"
+        "1. 先檢查 how_to_verify 中所有跳轉條件：若已知狀態已滿足任一條件 → jump_to_case。\n"
+        "2. 若 how_to_verify 要求執行 SQL 查詢，且該 sql_index 標記為 [未執行]"
+        " → execute_sql，指定可用 SQL 清單中的 sql_index，不得自行撰寫或修改 SQL，不得重複執行 [已執行] 的 SQL。\n"
+        "3. 若資訊不足以判斷 → clarify。\n"
+        "4. 若所有 SQL 均已執行且無滿足跳轉條件 → done。\n"
+        "5. 已充分反問後仍無法判斷 → human_handoff。\n"
         "只回傳 JSON，不得輸出其他內容。\n\n"
         "reply_to_user 規則（必填，不得為空）：\n"
-        "- 第一句：用一句話解讀當前 SQL 結果的意義（數值代表什麼現象）\n"
-        "- jump_to_case：第二句說明即將進入哪個 case，以 **粗體** 標示 case 名稱\n"
-        "- continue_sql：第二句說明結果符合 how_to_verify 哪個繼續條件，因此執行下一步\n"
-        "- clarify：reply_to_user 提出一個明確的反問；options 提供 2~4 個選項，每項不超過 20 字\n"
+        "- execute_sql：說明即將執行的查詢步驟及目的\n"
+        "- jump_to_case：說明即將進入哪個 case，以 **粗體** 標示 case 名稱\n"
+        "- done：簡短說明排查結論\n"
+        "- clarify：提出明確反問；options 提供 2~4 個選項，每項不超過 20 字\n"
         "- 禁止輸出內部推理、引用 how_to_verify 條文原文或 case_id 編號\n\n"
         "輸出格式：\n"
-        + ('{"next_action": "continue_sql", "reply_to_user": "..."}\n或\n' if has_more_sql else "")
-        + '{"next_action": "jump_to_case", "target_case_id": "case_X", "reply_to_user": "..."}\n'
+        '{"next_action": "execute_sql", "sql_index": 0, "reply_to_user": "..."}\n'
         "或\n"
-        '{"next_action": "clarify", "reply_to_user": "...", "options": ["選項1", "選項2", "選項3"]}\n'
+        '{"next_action": "jump_to_case", "target_case_id": "case_X", "reply_to_user": "..."}\n'
+        "或\n"
+        '{"next_action": "clarify", "reply_to_user": "...", "options": ["選項1", "選項2"]}\n'
+        "或\n"
+        '{"next_action": "done", "reply_to_user": "..."}\n'
         "或\n"
         '{"next_action": "human_handoff", "reply_to_user": "..."}'
     )
@@ -504,7 +444,6 @@ async def _handle_matching(
     reply = result.get("reply_to_user", "")
     valid_ids = [c["case_id"] for c in candidates]
 
-    # trace_decision
     yield _evt(
         "trace_decision",
         candidates=candidates,
@@ -515,10 +454,28 @@ async def _handle_matching(
     if reply is not None and action != "clarify":
         yield _evt("text_delta", content="\n\n" + reply)
 
-    if action == "continue_sql":
-        mgr.update_session(session_id, {"state": "collecting_params"})
-        async for evt in _show_sql(session_id, mgr.get_session(session_id), mgr):
-            yield evt
+    if action == "execute_sql":
+        sql_index = result.get("sql_index")
+        if sql_index is None or not isinstance(sql_index, int) or sql_index >= len(sql_blocks):
+            msg = f"[系統] 無效的 sql_index（{sql_index}），請通知工程師。"
+            yield _evt("text_delta", content=msg)
+            mgr.update_session(session_id, {"state": "done"})
+            return
+        sql_raw = sql_blocks[sql_index]
+        mgr.update_session(session_id, {
+            "pending_sql_raw": sql_raw,
+            "current_sql_index": sql_index,
+            "state": "collecting_params",
+        })
+        session = mgr.get_session(session_id)
+        missing = extract_sql_placeholders(sql_raw)
+        missing = [p for p in missing if not session["collected_params"].get(p)]
+        if missing:
+            yield _evt("text_delta", content=f"\n\n```sql\n{sql_raw}\n```")
+            yield _evt("collect_params", params=missing)
+        else:
+            async for evt in _show_sql(session_id, mgr.get_session(session_id), mgr):
+                yield evt
 
     elif action == "jump_to_case":
         target = result.get("target_case_id", "")
@@ -540,7 +497,7 @@ async def _handle_matching(
         })
         yield _evt("clarify", reply=reply, options=result.get("options", []))
 
-    elif action == "human_handoff":
+    elif action in ("done", "human_handoff"):
         mgr.update_session(session_id, {"state": "done"})
 
     else:

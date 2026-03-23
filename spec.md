@@ -174,6 +174,7 @@ Vector Search（所有 case）→ top-3 候選
                   （candidates 的 symptom 差異不大時觸發）
                ↓
          載入該 case
+         提取 how_to_verify 所有 sql block → 存入 sql_blocks
                ↓
          problem_to_verify != omit？
            ├── 是 → 向用戶提問，等待回答
@@ -273,18 +274,13 @@ session = {
     # clarify 反問的上下文（用戶回答後重新進入哪個決策點）
     "clarify_context": None,  # None | "matching_case" | "deciding_jump" | "questioning"
 
-    # SQL 暫存
-    "pending_sql": None,
-    "pending_sql_raw": None,
+    # SQL 區塊（_enter_case 時從 how_to_verify 提取，LLM 用 index 引用，不依序執行）
+    "sql_blocks": [],           # 當前 case 的所有 SQL template 陣列（來自 SOP 原文）
 
-    # SQL 佇列（一個 case 的 how_to_verify 可能含多個 SQL，依序執行）
-    # - _enter_case 時從 how_to_verify 解析所有 SQL 填入 sql_queue
-    # - sql_queue_index 指向當前待執行的 SQL
-    # - 每次用戶確認執行後 index + 1
-    # - jump_to_case 時 index 重置為 0（queue 換成新 case 的 SQL）
-    # - clear_for_sop_entry 時兩者全部清空
-    "sql_queue": [],        # 當前 case 的所有 SQL template 清單
-    "sql_queue_index": 0,   # 目前執行到第幾個 SQL（0-based）
+    # 當前待執行的 SQL（由 LLM 每次指定 index，不自動遞增）
+    "current_sql_index": None,  # LLM 指定的 sql_blocks index
+    "pending_sql_raw": None,    # sql_blocks[current_sql_index]（SOP 原文，含 &param）
+    "pending_sql": None,        # 填入參數後的完整 SQL（等待用戶確認）
 
     # 狀態機
     "state": "idle",
@@ -320,8 +316,9 @@ session = {
   problem_to_verify == omit → 跳過
       ↓
   [collecting_params]
-  偵測 how_to_verify 中的 &param 佔位符
-  一次性渲染表單，讓用戶填入所有缺失參數
+  LLM 回傳 execute_sql + sql_index
+  後端取 sql_blocks[sql_index]（SOP 原文，LLM 不修改 SQL 內容）
+  偵測 &param 佔位符，一次性渲染表單讓用戶填入缺失參數
       ↓
   [awaiting_sql_confirm]
   填入參數，輸出完整 SQL，等待 yes / no
@@ -440,6 +437,8 @@ def route(user_input: str, session: dict) -> Literal["sop", "fallback_chat"]:
 - `get_case(sop_data, case_id) -> str`：取得特定 case 完整 markdown
 - `get_case_symptom_summary(sop_data, case_ids) -> list[dict]`：
   取得候選 case 的 `case_id` + `symptom`，供 LLM 候選選擇用
+- `extract_sql_blocks(how_to_verify: str) -> list[str]`：
+  提取 how_to_verify 裡所有 ```sql``` block，回傳 template 清單
 - `extract_sql_placeholders(sql) -> list[str]`
 - `fill_sql_params(sql, params) -> str`：將 `&param` 替換為實際值
 
@@ -478,8 +477,8 @@ def route(user_input: str, session: dict) -> Literal["sop", "fallback_chat"]:
 - `update_session(session_id, updates)`
 - `reset_session(session_id)`：清空狀態，保留 session_id
 - `append_known_fact(session_id, fact: str)`：追加 SQL 結果摘要到 known_facts
-- `jump_to_case(session_id, new_case_id: str)`：跳轉 case，保留 collected_params，只清空 pending_sql / sql_queue
-- `clear_for_sop_entry(session_id)`：新問題進入時清空所有 SOP 相關狀態（含 visited_cases 和 collected_params）
+- `jump_to_case(session_id, new_case_id: str)`：跳轉 case，保留 collected_params，清空 sql_blocks / current_sql_index / pending_sql / pending_sql_raw
+- `clear_for_sop_entry(session_id)`：新問題進入時清空所有 SOP 相關狀態（含 visited_cases、collected_params、sql_blocks、current_sql_index、pending_sql、pending_sql_raw）
 - `record_case_visit(session_id, case_id) -> bool`：
   記錄訪問次數，若超過 max_case_visits 回傳 False（觸發 human_handoff）
 
@@ -734,7 +733,7 @@ pydantic>=2.0.0
 5. `agent/router.py` — Vector Search + LLM 候選選擇
 6. `agent/param_extractor.py`
 7. `agent/sql_executor.py`
-8. `agent/session.py` — 含 known_facts / sql_queue 管理，狀態機使用 matching_case
+8. `agent/session.py` — 含 known_facts 管理，狀態機使用 matching_case
 9. `api/routes.py` + `api/sse.py`
 10. `frontend/` — Vite 腳手架 + 元件實作
 11. `main.py` — 完整端對端測試
@@ -749,6 +748,7 @@ pydantic>=2.0.0
 - [ ] problem_to_verify != omit 時正確提問；omit 時直接執行
 - [ ] SQL 佔位符正確偵測，前端渲染表單一次收集所有缺失參數
 - [ ] 填入參數後輸出完整 SQL，等待 yes / no 確認
+- [ ] LLM 回傳 sql_index，後端從 sql_blocks 取 SOP 原文 SQL，不經 LLM 生成
 - [ ] 只有 yes 後才執行 SQL，非 SELECT 被拒絕
 - [ ] LLM 依 how_to_verify 跳轉條件 + SQL 結果正確決定下一個 case
 - [ ] jumps_to 只能跳同一份 SOP 內的 case

@@ -11,11 +11,12 @@ def _default_state() -> dict[str, Any]:
         "fallback_reason": None,      # "no_results" | "low_confidence"
         "known_facts": [],            # 跨 case 保留，只能透過 append_known_fact 新增
         "conversation_history": [],   # 最近對話（由呼叫方自行控制長度）
-        "collected_params": {},       # case 跳轉時清空
+        "collected_params": {},       # case 跳轉時保留（同名參數自動複用）
         "pending_sql": None,          # 填入參數後的 SQL，等待用戶確認
-        "pending_sql_raw": None,      # 填入前的原始 SQL template
-        "sql_queue": [],              # 當前 case 的所有 SQL blocks
-        "sql_queue_index": 0,         # 目前執行到第幾條 SQL
+        "pending_sql_raw": None,      # 填入前的原始 SQL template（從 sql_blocks[current_sql_index] 取得）
+        "sql_blocks": [],             # 當前 case how_to_verify 中所有 SQL block，由 _enter_case 填入
+        "current_sql_index": None,   # LLM 指定要執行的 sql_blocks 索引
+        "executed_sql_indexes": [],  # 已執行過的 sql_blocks 索引，防止 LLM 重複執行
         "state": "idle",              # idle | collecting_params | awaiting_sql_confirm
                                       #       | matching_case | ambiguous_case
                                       #       | clarifying | done
@@ -67,7 +68,7 @@ class SessionManager:
         """跳轉至另一個 case。
 
         規則：保留 collected_params（同名參數自動複用，避免重複填寫），
-              清空 pending_sql 與 sql_queue，保留 known_facts。
+              清空 pending_sql，保留 known_facts。
         """
         session = self.get_session(session_id)
         session["current_case_id"] = new_case_id
@@ -75,9 +76,10 @@ class SessionManager:
             session["current_sop_file"] = new_sop_file
         session["pending_sql"] = None
         session["pending_sql_raw"] = None
-        session["sql_queue"] = []
-        session["sql_queue_index"] = 0
-        session["state"] = "collecting_params"
+        session["sql_blocks"] = []
+        session["current_sql_index"] = None
+        session["executed_sql_indexes"] = []
+        session["state"] = "matching_case"
 
     def record_case_visit(self, session_id: str, case_id: str) -> bool:
         """記錄進入 case 的次數。回傳 True 表示允許進入，False 表示超過上限（應 human_handoff）。"""
@@ -96,8 +98,9 @@ class SessionManager:
         session["collected_params"] = {}
         session["pending_sql"] = None
         session["pending_sql_raw"] = None
-        session["sql_queue"] = []
-        session["sql_queue_index"] = 0
+        session["sql_blocks"] = []
+        session["current_sql_index"] = None
+        session["executed_sql_indexes"] = []
         session["conversation_history"] = []
         session["ambiguous_case_candidates"] = []
         session["visited_cases"] = {}

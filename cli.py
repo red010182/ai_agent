@@ -8,17 +8,17 @@
 """
 
 import json
-import re
 import sys
 from pathlib import Path
 from typing import Any
 
 import config
 from agent import llm_client, vector_search
-from agent.param_extractor import extract_missing_params, parse_params_from_user_input
+from agent.param_extractor import parse_params_from_user_input
 from agent.router import route
 from agent.session import SessionManager
 from agent.sop_loader import (
+    extract_sql_blocks,
     extract_sql_placeholders,
     fill_sql_params,
     get_case_symptom_summary,
@@ -44,29 +44,11 @@ FALLBACK_SYSTEM_PROMPT = "你是一個友善的助手，使用繁體中文回覆
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
-_SQL_RE = re.compile(r"```sql\n(.*?)```", re.DOTALL)
-
 mgr = SessionManager()
 
 
 def _say(text: str) -> None:
     print(f"\n助手：{text}")
-
-
-def _extract_sql_blocks(action: str) -> list[str]:
-    return _SQL_RE.findall(action)
-
-
-def _all_unique_placeholders(sqls: list[str]) -> list[str]:
-    """回傳所有 SQL 中不重複的佔位符，保持首次出現順序。"""
-    seen: set[str] = set()
-    result: list[str] = []
-    for sql in sqls:
-        for p in extract_sql_placeholders(sql):
-            if p not in seen:
-                seen.add(p)
-                result.append(p)
-    return result
 
 
 def _load_case(session: dict[str, Any]) -> tuple[dict, dict]:
@@ -81,44 +63,40 @@ def _load_case(session: dict[str, Any]) -> tuple[dict, dict]:
 
 def _enter_case(session_id: str, session: dict[str, Any]) -> None:
     """載入當前 case 並開始處理。不需要用戶輸入即可執行。"""
-    sop_data, case = _load_case(session)
+    case_id = session["current_case_id"]
 
-    # 顯示 question（若非 omit）
-    q = case["question"].strip()
-    if q and q.lower() != "omit":
-        _say(q)
-
-    # 建立 SQL queue
-    sql_blocks = _extract_sql_blocks(case["action"])
-    mgr.update_session(session_id, {
-        "state": "collecting_params",
-        "sql_queue": sql_blocks,
-        "sql_queue_index": 0,
-    })
-
-    if not sql_blocks:
-        # 此 case 無 SQL，顯示 action 說明後直接進入條件比對
-        _say(f"請依以下步驟操作：\n\n{case['action']}")
-        mgr.update_session(session_id, {"state": "matching_case"})
-        _do_matching(session_id, session)
+    # 迴圈偵測：同一 case 進入次數超過上限 → 結束
+    if not mgr.record_case_visit(session_id, case_id):
+        _say(f"⚠️ 偵測到重複進入 {case_id}，可能發生無限迴圈。請通知工程師協助處理。")
+        mgr.update_session(session_id, {"state": "done"})
         return
 
-    # 立即檢查是否所有參數都已收集（例如 case 跳轉後 collected_params 被清空）
-    missing = _all_unique_placeholders(sql_blocks)
-    missing = [p for p in missing if not session["collected_params"].get(p)]
-    if not missing:
-        _do_show_sql(session_id, session)
+    sop_data, case = _load_case(session)
+    metadata = sop_data["metadata"]
+
+    # 提取 how_to_verify 中所有 SQL block，存入 session
+    sql_blocks = extract_sql_blocks(case.get("how_to_verify", ""))
+    mgr.update_session(session_id, {"sql_blocks": sql_blocks, "current_sql_index": None})
+
+    # 開場說明
+    title = case.get("title", case_id)
+    problem = case.get("problem_to_verify", "").strip()
+    if problem and problem.lower() != "omit":
+        _say(f"這看起來是 {case_id}：{title}。\n\n為了驗證【{problem}】，開始執行排查流程。")
     else:
-        _say(f"需要以下資訊才能執行查詢：\n• {missing[0]}")
+        _say(f"這看起來是 {case_id}：{title}。\n\n開始執行排查流程。")
+
+    mgr.update_session(session_id, {"state": "matching_case"})
+    _do_matching(session_id, mgr.get_session(session_id))
 
 
 def _do_collecting_params(
     session_id: str, session: dict[str, Any], user_input: str
 ) -> None:
     """用戶回覆參數值 → 提取 → 補問或進入 SQL 確認。"""
-    sql_blocks = session["sql_queue"]
+    sql_raw = session.get("pending_sql_raw") or ""
     collected = session["collected_params"]
-    all_params = _all_unique_placeholders(sql_blocks)
+    all_params = extract_sql_placeholders(sql_raw)
     missing = [p for p in all_params if not collected.get(p)]
 
     # 嘗試從用戶輸入提取參數
@@ -129,22 +107,14 @@ def _do_collecting_params(
         missing = [p for p in all_params if not new_collected.get(p)]
 
     if not missing:
-        _do_show_sql(session_id, session)
+        _do_show_sql(session_id, mgr.get_session(session_id))
     else:
         _say(f"請提供：{missing[0]}")
 
 
 def _do_show_sql(session_id: str, session: dict[str, Any]) -> None:
-    """將下一條 SQL 填入參數並顯示給用戶確認。"""
-    sql_blocks = session["sql_queue"]
-    idx = session["sql_queue_index"]
-
-    if idx >= len(sql_blocks):
-        mgr.update_session(session_id, {"state": "matching_case"})
-        _do_matching(session_id, session)
-        return
-
-    sql_raw = sql_blocks[idx]
+    """將 pending_sql_raw 填入參數並顯示給用戶確認。"""
+    sql_raw = session.get("pending_sql_raw") or ""
     try:
         sql_filled = fill_sql_params(sql_raw, session["collected_params"])
     except KeyError as e:
@@ -155,7 +125,6 @@ def _do_show_sql(session_id: str, session: dict[str, Any]) -> None:
     mgr.update_session(session_id, {
         "state": "awaiting_sql_confirm",
         "pending_sql": sql_filled,
-        "pending_sql_raw": sql_raw,
     })
     _say(
         f"將執行以下查詢，請確認（輸入 yes 確認 / no 取消）：\n\n```sql\n{sql_filled}\n```"
@@ -191,13 +160,17 @@ def _do_sql_confirm(
             session_id,
             f"{session['current_case_id']} SQL 查詢結果：{summary}",
         )
+        # 記錄已執行的 sql_index，防止 LLM 重複執行同一條 SQL
+        executed = list(session.get("executed_sql_indexes", []))
+        if session.get("current_sql_index") is not None:
+            executed.append(session["current_sql_index"])
         mgr.update_session(session_id, {
             "pending_sql": None,
             "pending_sql_raw": None,
-            "sql_queue_index": session["sql_queue_index"] + 1,
+            "executed_sql_indexes": executed,
+            "state": "matching_case",
         })
-        # 繼續下一條 SQL 或進入條件比對
-        _do_show_sql(session_id, session)
+        _do_matching(session_id, mgr.get_session(session_id))
 
     elif ans == "no":
         _say("已取消 SQL 執行。請問您想如何繼續？（重新描述問題或輸入 exit 離開）")
@@ -211,37 +184,49 @@ def _do_sql_confirm(
 
 
 def _do_matching(session_id: str, session: dict[str, Any]) -> None:
-    """LLM 條件比對，決定跳轉或補問用戶。不需要用戶輸入即可執行。"""
+    """LLM 決策點：決定執行哪條 SQL、跳轉目標，或反問用戶。不需要用戶輸入即可執行。"""
     sop_data, case = _load_case(session)
     jumps_to: list[str] = case.get("jumps_to", [])
+    how_to_verify = case.get("how_to_verify", "")
 
-    if not jumps_to:
-        _say("SOP 流程完成，問題排查結束。如有其他問題請重新描述症狀。")
-        mgr.update_session(session_id, {"state": "done"})
-        return
-
-    candidates = get_case_symptom_summary(sop_data, jumps_to)
-    known_facts_text = "\n".join(f"- {f}" for f in session["known_facts"])
+    candidates = get_case_symptom_summary(sop_data, jumps_to) if jumps_to else []
+    known_facts_text = "\n".join(f"- {f}" for f in session["known_facts"]) or "（尚無）"
     candidates_text = "\n".join(f"{c['case_id']}: {c['symptom']}" for c in candidates)
 
+    sql_blocks = session.get("sql_blocks", [])
+    executed_indexes: set[int] = set(session.get("executed_sql_indexes", []))
+    sql_list_text = "\n".join(
+        f"[{i}] {'[已執行]' if i in executed_indexes else '[未執行]'} {s}"
+        for i, s in enumerate(sql_blocks)
+    )
+
     prompt = (
-        f"[已知狀態]\n{known_facts_text}\n\n"
-        f"[候選 case 的 symptom]\n{candidates_text}\n\n"
-        "[任務]\n"
-        "根據已知狀態，判斷最符合哪個 case 的 symptom。\n"
-        "若已知狀態不足以判斷，回傳 ask_user 詢問用戶。\n"
+        f"[當前 case 的 how_to_verify]\n{how_to_verify}\n\n"
+        + (f"[可用 SQL 清單（依索引引用）]\n{sql_list_text}\n\n" if sql_blocks else "")
+        + f"[SQL 執行結果（已知狀態）]\n{known_facts_text}\n\n"
+        + (f"[候選 case 的 symptom]\n{candidates_text}\n\n" if candidates else "")
+        + "[判斷規則（依序執行，命中即停止）]\n"
+        "1. 先檢查 how_to_verify 中所有跳轉條件：若已知狀態已滿足任一條件 → jump_to_case。\n"
+        "2. 若 how_to_verify 要求執行 SQL 查詢，且該 sql_index 標記為 [未執行]"
+        " → execute_sql，指定可用 SQL 清單中的 sql_index，不得自行撰寫或修改 SQL，不得重複執行 [已執行] 的 SQL。\n"
+        "3. 若資訊不足以判斷 → clarify。\n"
+        "4. 若所有 SQL 均已執行且無滿足跳轉條件 → done。\n"
+        "5. 已充分反問後仍無法判斷 → human_handoff。\n"
         "只回傳 JSON，不得輸出其他內容。\n\n"
-        "reply_to_user 必須包含：\n"
-        "1. SQL 查詢結果的解讀方式（數值代表什麼、判斷依據）\n"
-        "2. 根據何條件選擇該 case（或需要用戶補充哪些資訊）\n\n"
-        "reply_to_user 必須使用 Markdown 格式：\n"
-        "- **粗體** 標示關鍵數值或 case 名稱\n"
-        "- 條列式 `-` 列出多個判斷依據\n"
-        "- `code` 標示 SQL 欄位名或數值\n\n"
+        "reply_to_user 規則（必填，不得為空）：\n"
+        "- execute_sql：說明即將執行的查詢步驟及目的\n"
+        "- jump_to_case：說明即將進入哪個 case，標示 case 名稱\n"
+        "- done：簡短說明排查結論\n"
+        "- clarify：提出明確反問；options 提供 2~4 個選項，每項不超過 20 字\n"
+        "- 禁止輸出內部推理、引用 how_to_verify 條文原文或 case_id 編號\n\n"
         "輸出格式：\n"
+        '{"next_action": "execute_sql", "sql_index": 0, "reply_to_user": "..."}\n'
+        "或\n"
         '{"next_action": "jump_to_case", "target_case_id": "case_X", "reply_to_user": "..."}\n'
         "或\n"
-        '{"next_action": "ask_user", "reply_to_user": "..."}\n'
+        '{"next_action": "clarify", "reply_to_user": "...", "options": ["選項1", "選項2"]}\n'
+        "或\n"
+        '{"next_action": "done", "reply_to_user": "..."}\n'
         "或\n"
         '{"next_action": "human_handoff", "reply_to_user": "..."}'
     )
@@ -254,26 +239,53 @@ def _do_matching(session_id: str, session: dict[str, Any]) -> None:
 
     action = result.get("next_action", "human_handoff")
     reply = result.get("reply_to_user", "")
-
-    if reply:
-        _say(reply)
-
     valid_ids = [c["case_id"] for c in candidates]
 
-    if action == "jump_to_case":
+    if reply and action != "clarify":
+        _say(reply)
+
+    if action == "execute_sql":
+        sql_index = result.get("sql_index")
+        if sql_index is None or not isinstance(sql_index, int) or sql_index >= len(sql_blocks):
+            _say(f"[系統] 無效的 sql_index（{sql_index}），請通知工程師。")
+            mgr.update_session(session_id, {"state": "done"})
+            return
+        sql_raw = sql_blocks[sql_index]
+        mgr.update_session(session_id, {
+            "pending_sql_raw": sql_raw,
+            "current_sql_index": sql_index,
+            "state": "collecting_params",
+        })
+        session = mgr.get_session(session_id)
+        missing = extract_sql_placeholders(sql_raw)
+        missing = [p for p in missing if not session["collected_params"].get(p)]
+        if missing:
+            _say(f"即將執行以下查詢：\n\n```sql\n{sql_raw}\n```\n\n需要以下資訊：{missing[0]}")
+        else:
+            _do_show_sql(session_id, session)
+
+    elif action == "jump_to_case":
         target = result.get("target_case_id", "")
         if target in valid_ids:
             mgr.jump_to_case(session_id, target)
-            session = mgr.get_session(session_id)   # 取更新後的 session
-            _enter_case(session_id, session)
+            _enter_case(session_id, mgr.get_session(session_id))
         else:
             _say(f"[系統] 無效跳轉目標 '{target}'，請通知工程師。")
             mgr.update_session(session_id, {"state": "done"})
 
-    elif action == "ask_user":
-        mgr.update_session(session_id, {"state": "matching_case"})
+    elif action == "clarify":
+        options = result.get("options", [])
+        options_text = "\n".join(f"  {i + 1}. {o}" for i, o in enumerate(options))
+        msg = reply
+        if options_text:
+            msg += f"\n\n選項：\n{options_text}\n\n（或直接輸入說明）"
+        _say(msg)
+        mgr.update_session(session_id, {
+            "state": "clarifying",
+            "clarify_context": "matching_case",
+        })
 
-    elif action == "human_handoff":
+    elif action in ("done", "human_handoff"):
         mgr.update_session(session_id, {"state": "done"})
 
     else:
@@ -333,7 +345,30 @@ def process_turn(session_id: str, user_input: str) -> None:
 
     elif state == "matching_case":
         mgr.append_known_fact(session_id, f"用戶補充：{user_input}")
-        _do_matching(session_id, session)
+        _do_matching(session_id, mgr.get_session(session_id))
+
+    elif state == "clarifying":
+        mgr.append_known_fact(session_id, f"用戶澄清：{user_input}")
+        mgr.update_session(session_id, {"state": "matching_case", "clarify_context": None})
+        _do_matching(session_id, mgr.get_session(session_id))
+
+    elif state == "ambiguous_case":
+        # 用戶選擇 case：接受 case_id 直接輸入
+        candidates = session.get("ambiguous_case_candidates", [])
+        valid_ids = [c["case_id"] for c in candidates]
+        chosen = user_input.strip()
+        if chosen in valid_ids:
+            chosen_meta = next(c for c in candidates if c["case_id"] == chosen)
+            mgr.update_session(session_id, {
+                "current_case_id": chosen,
+                "current_sop_file": chosen_meta["sop_file"],
+                "ambiguous_case_candidates": [],
+            })
+            mgr.append_known_fact(session_id, f"原始症狀：{user_input}")
+            _enter_case(session_id, mgr.get_session(session_id))
+        else:
+            ids_str = "、".join(valid_ids)
+            _say(f"請輸入有效的 case ID（{ids_str}）。")
 
     elif state == "done":
         _say("開始新一輪問題排查。")
